@@ -1,5 +1,9 @@
+# Data
 mimic-iv-3.1/
 mimic-iv-ecg/
 mimic-iv-echo/
 
+# Dev
 .DS_Store
+.vscode/
+__pycache__/
