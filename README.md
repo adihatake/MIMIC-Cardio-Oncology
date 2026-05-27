@@ -1,1 +1,1 @@
-# MIMIC-SQL-Practice
+# MIMIC-Data-Exploration
