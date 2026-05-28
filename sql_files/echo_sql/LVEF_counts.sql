@@ -11,6 +11,8 @@ SELECT
     unit
 
 FROM read_csv_auto('mimic-iv-echo/structured-measurement.csv')
-WHERE measurement = 'lvef' AND CAST(result AS DOUBLE) < 50.0; -- result is stored as text so we need to convert
+
+-- Returns: 20683 with dangerous LVEF
+WHERE measurement = 'lvef' AND CAST(result AS FLOAT) < 50.0; -- result is stored as text so we need to convert
 
 SELECT DISTINCT subject_id FROM LVEF_studies

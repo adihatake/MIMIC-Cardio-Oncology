@@ -1,14 +1,14 @@
 -- Get counts for number of studies and average # of studies per patients, min, max
-CREATE TABLE studies AS 
+CREATE TABLE echo_measurements AS
 SELECT
     subject_id,
-    study_id,
-    study_datetime,
     measurement_id,
-    measurement_datetime
-FROM read_csv_auto("mimic-iv-echo/echo-study-list.csv");
+    measurement_datetime,
+    test_type,
+    measurement,
+    measurement_description,
+    result,
+    unit
+FROM read_csv_auto('mimic-iv-echo/structured-measurement.csv');
 
--- Returns 4579 patients in the dataset
--- SELECT COUNT(DISTINCT subject_id) FROM studies;
-
-SELECT DISTINCT subject_id FROM studies;
+SELECT DISTINCT subject_id FROM echo_measurements; -- returns 91 372 unique patients as expected from the dataset
