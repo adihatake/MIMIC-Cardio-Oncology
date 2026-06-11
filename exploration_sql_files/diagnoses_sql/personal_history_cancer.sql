@@ -21,5 +21,3 @@ CREATE VIEW cancer_history AS (
 );
 
 -- Get number of distinct patients with personal history of malignant cancer 
--- Returns: 32399
-SELECT COUNT(DISTINCT subject_id) FROM cancer_history;
