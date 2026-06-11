@@ -1,26 +1,22 @@
 -- 1. Fetch call cancer and admissions data
 -- This step links:
--- (1) cancer cohort index time
+-- (1) cancer cohort first drug exposure time
 -- (2) hospital admissions
 -- (3) diagnosis ICD codes
 -- so we can evaluate diagnoses after drug exposure
 
-CREATE VIEW cancer_cv_base AS
+CREATE OR REPLACE VIEW cancer_cv_base AS
 SELECT
     c.subject_id,   -- patient identifier
     c.first_oncology_time,  -- index time (first cancer drug exposure)
-
     a.hadm_id,     -- hospital admission ID
     a.admittime,   -- admission timestamp (used for time-window filtering)
-
     d.icd_code   -- diagnosis code (ICD-9 or ICD-10)
 FROM cancer_first_drug c
 JOIN read_csv_auto('mimic-iv-3.1/hosp/diagnoses_icd.csv') d
     ON c.subject_id = d.subject_id   -- link diagnoses to patient
 JOIN read_csv_auto('mimic-iv-3.1/hosp/admissions.csv') a
     ON d.hadm_id = a.hadm_id;        -- attach admission timing information
-
-
 
 
 
