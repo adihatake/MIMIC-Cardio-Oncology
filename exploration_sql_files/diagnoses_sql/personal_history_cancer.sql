@@ -1,6 +1,6 @@
 -- Get number of entries with personal history of malignant cancer 
 -- Returns: 84381 rows
-CREATE VIEW cancer_history AS (
+CREATE OR REPLACE VIEW cancer_history AS (
     SELECT DISTINCT
         subject_id,
         hadm_id,

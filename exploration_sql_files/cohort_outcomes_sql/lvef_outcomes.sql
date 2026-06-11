@@ -1,5 +1,5 @@
 -- Obtain all LVEF studies
-CREATE VIEW all_lvef AS
+CREATE OR REPLACE VIEW all_lvef AS
 SELECT
     subject_id, -- patient identifier
     measurement_datetime,-- time of echo measurement
@@ -14,7 +14,7 @@ WHERE measurement = 'lvef' -- only keep LVEF measurements (ignore other echo met
 
 
 -- Get a baseline LVEF
-CREATE VIEW baseline_lvef AS
+CREATE OR REPLACE VIEW baseline_lvef AS
 SELECT
     c.subject_id,  -- cancer patient ID
     c.first_oncology_time, -- index time (first drug exposure)
@@ -27,15 +27,15 @@ LEFT JOIN all_lvef a   -- LEFT JOIN keeps patients even if no baseline exists
    AND a.measurement_datetime < c.first_oncology_time  -- only pre-treatment echos
    AND a.measurement_datetime >= c.first_oncology_time - INTERVAL '1 year' -- define how far we want to look back for pre-treatment echos
 
-QUALIFY ROW_NUMBER() OVER (
-    PARTITION BY c.subject_id -- one baseline per patient
-    ORDER BY a.measurement_datetime DESC  -- pick most recent pre-drug echo
+QUALIFY ROW_NUMBER() OVER ( 
+    PARTITION BY c.subject_id -- restart the numbering of each patients
+    ORDER BY a.measurement_datetime DESC  -- order by the measurement datetime and pick most recent pre-drug echo
 ) = 1;
 
 
 
 -- Get follow-up LVEFs (1 year window after first drug exposure)
-CREATE VIEW followup_lvef AS
+CREATE OR REPLACE VIEW followup_lvef AS
 SELECT
     c.subject_id,  -- patient ID
     c.first_oncology_time,   -- index time
@@ -62,18 +62,18 @@ SELECT
     b.baseline_time,
     b.baseline_lvef,
 
-    -- Availability flags
+    -- Check if the patient has a baseline LVEF
     CASE 
         WHEN b.baseline_lvef IS NOT NULL THEN 1 
         ELSE 0 
     END AS has_baseline_lvef,
-
+    -- Check if the patient has any follow-up LVEFs
     CASE 
         WHEN COUNT(f.lvef_value) > 0 THEN 1 
         ELSE 0 
     END AS has_followup_lvef_1yr,
 
-    -- Follow-up LVEF summary
+    -- Follow-up LVEF summary; look at worst and first follow-up
     MIN(f.lvef_value) AS worst_followup_lvef_1yr,
 
     MIN(f.measurement_datetime) AS first_followup_lvef_time_1yr,
@@ -98,7 +98,7 @@ SELECT
     ) AS lvef_below_50_1yr,
 
     -- Strict LVEF-defined cardiotoxicity:
-    -- drop >= 10 percentage points AND follow-up LVEF < 50%
+    -- drop >= 10 percentage points AND follow-up LVEF < 50% for any LVEF measurement. 
     MAX(
         CASE
             WHEN f.lvef_value IS NOT NULL

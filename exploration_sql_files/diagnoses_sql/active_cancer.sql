@@ -1,5 +1,4 @@
 -- Get number of entries with active cancer diagnoses
--- Returns: 125471 rows
 CREATE VIEW active_cancer AS (
     SELECT DISTINCT
         subject_id,
@@ -12,8 +11,8 @@ CREATE VIEW active_cancer AS (
     (
         icd_version = 9
         AND (
-            TRY_CAST(icd_code AS INTEGER) BETWEEN 140 AND 172 -- excludes skin cancers
-            OR TRY_CAST(icd_code AS INTEGER) BETWEEN 174 AND 208
+            (TRY_CAST(SUBSTRING(icd_code, 1, 3) AS INTEGER) BETWEEN 140 AND 172 -- Excludes skin cancers
+            OR TRY_CAST(SUBSTRING(icd_code, 1, 3) AS INTEGER) BETWEEN 174 AND 208)
         )
     )
     OR
@@ -23,7 +22,3 @@ CREATE VIEW active_cancer AS (
         AND icd_code NOT LIKE 'C44%' -- excludes skin cancers
     )
 );
-
--- Get number of distinct cancer patients
--- Returns: 29369
-SELECT COUNT(DISTINCT subject_id) FROM active_cancer;
