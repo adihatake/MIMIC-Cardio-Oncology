@@ -1,0 +1,30 @@
+drug_classes_in_cycle,n_rows,n_patients,positives
+anthracycline,3003,1198,621
+taxane,674,449,81
+fluoropyrimidine,559,368,39
+proteasome_inhibitor,441,275,94
+tyrosine_kinase_inhibitor,201,117,39
+immunomodulatory_agent,103,83,19
+anthracycline | proteasome_inhibitor,84,31,6
+vegf_inhibitor,80,65,3
+fluoropyrimidine | taxane,52,35,11
+her2_targeted,46,31,7
+immunomodulatory_agent | proteasome_inhibitor,37,27,6
+immune_checkpoint_inhibitor,32,24,1
+egfr_inhibitor,26,13,7
+anthracycline | tyrosine_kinase_inhibitor,20,12,11
+her2_targeted | taxane,18,17,1
+anthracycline | immunomodulatory_agent,9,7,0
+fluoropyrimidine | her2_targeted,7,7,0
+anthracycline | fluoropyrimidine,6,5,1
+immune_checkpoint_inhibitor | taxane,5,1,0
+fluoropyrimidine | vegf_inhibitor,5,4,1
+taxane | vegf_inhibitor,3,3,1
+egfr_inhibitor | fluoropyrimidine,2,2,1
+anthracycline | vegf_inhibitor,1,1,0
+egfr_inhibitor | fluoropyrimidine | vegf_inhibitor,1,1,0
+anthracycline | taxane,1,1,1
+anthracycline | her2_targeted,1,1,0
+anthracycline | immunomodulatory_agent | proteasome_inhibitor,1,1,0
+anthracycline | proteasome_inhibitor | taxane,1,1,0
+egfr_inhibitor | taxane,1,1,0
