@@ -10,7 +10,10 @@ CREATE OR REPLACE VIEW all_cardiotoxicity_events AS
 SELECT
     subject_id,
     toxicity_time,
-    toxicity_type
+    toxicity_type,
+    event_lvef,
+    absolute_lvef_drop,
+    NULL AS cv_event_icd_codes
 FROM lvef_toxicity_events
 
 UNION ALL
@@ -18,14 +21,20 @@ UNION ALL
 SELECT
     subject_id,
     toxicity_time,
-    toxicity_type
+    toxicity_type,
+    NULL AS event_lvef,
+    NULL AS absolute_lvef_drop,
+    cv_event_icd_codes
 FROM cv_toxicity_events;
 
 CREATE OR REPLACE VIEW first_cardiotoxicity_event AS
 SELECT
     subject_id,
     toxicity_time AS first_toxicity_time,
-    toxicity_type AS first_toxicity_type
+    toxicity_type AS first_toxicity_type,
+    event_lvef AS first_event_lvef,
+    absolute_lvef_drop AS first_absolute_lvef_drop,
+    cv_event_icd_codes AS first_cv_event_icd_codes
 FROM all_cardiotoxicity_events
 QUALIFY ROW_NUMBER() OVER (
     PARTITION BY subject_id
