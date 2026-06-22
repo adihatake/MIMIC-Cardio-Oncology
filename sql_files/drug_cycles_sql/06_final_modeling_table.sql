@@ -35,6 +35,9 @@ SELECT
 
     ft.first_toxicity_time,
     ft.first_toxicity_type,
+    ft.first_event_lvef,
+    ft.first_absolute_lvef_drop,
+    ft.first_cv_event_icd_codes,
 
     CASE
         WHEN ft.first_toxicity_time > e.prediction_time
