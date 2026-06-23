@@ -21,13 +21,14 @@ Outputs (tokenization_outputs/ver1/):
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 # ── configuration ─────────────────────────────────────────────────────────────
-INPUT_DIR  = Path(__file__).resolve().parent.parent / "tokenization_outputs" / "ver1"
+DEFAULT_DIR = Path(__file__).resolve().parent.parent / "tokenization_outputs" / "ver1"
 TRAIN_FRAC = 0.70
 VAL_FRAC   = 0.15
 TEST_FRAC  = 0.15
@@ -60,15 +61,11 @@ def _stratified_split(
     return np.array(selected), np.array(remaining)
 
 
-def main(input_name: str | None = None) -> None:
-    global INPUT_DIR
-    if input_name is not None:
-        INPUT_DIR = Path(__file__).resolve().parent.parent / "tokenization_outputs" / input_name
-
-    samples_path = INPUT_DIR / "samples.parquet"
+def main(input_dir: Path = DEFAULT_DIR) -> None:
+    samples_path = input_dir / "samples.parquet"
     if not samples_path.exists():
         raise FileNotFoundError(
-            f"samples.parquet not found at {INPUT_DIR}. "
+            f"samples.parquet not found at {input_dir}. "
             "Run tokenize_cycle_sequences.py first."
         )
 
@@ -123,7 +120,7 @@ def main(input_name: str | None = None) -> None:
         "Subject assignment is not a clean partition — check split logic"
 
     # Save
-    with open(INPUT_DIR / "splits.json", "w") as f:
+    with open(input_dir / "splits.json", "w") as f:
         json.dump({
             "seed":        SEED,
             "train_frac":  TRAIN_FRAC,
@@ -132,7 +129,7 @@ def main(input_name: str | None = None) -> None:
             "subject_ids": {k: [int(x) for x in v] for k, v in split_subjects.items()},
             "row_indices": split_row_indices,
         }, f, indent=2)
-    print(f"Saved splits to {INPUT_DIR / 'splits.json'}")
+    print(f"Saved splits to {input_dir / 'splits.json'}")
 
     # Summary table
     rows = []
@@ -148,7 +145,7 @@ def main(input_name: str | None = None) -> None:
             "pct_positive": f"{subset['binary_label'].mean():.1%}",
         })
     summary = pd.DataFrame(rows)
-    summary.to_csv(INPUT_DIR / "splits_summary.csv", index=False)
+    summary.to_csv(input_dir / "splits_summary.csv", index=False)
 
     print()
     print(summary.to_string(index=False))
@@ -156,4 +153,5 @@ def main(input_name: str | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    dir_arg = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_DIR
+    main(dir_arg)

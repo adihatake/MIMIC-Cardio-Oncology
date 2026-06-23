@@ -91,13 +91,12 @@ from tqdm import tqdm
 
 # ── configurable paths ────────────────────────────────────────────────────────
 REPO_ROOT    = Path(__file__).resolve().parent.parent
-DATA_DIR     = Path("/Users/catherinebalajadia/Downloads/2026_Summer_Research/MIMIC_IV_raw_data")
 MODELING_DIR = REPO_ROOT / "cohort_outputs" / "cycle_modeling_ver2"
 OUTPUT_DIR   = REPO_ROOT / "tokenization_outputs" / "ver1"
 MAX_SEQ_LEN  = 600
+DATA_DIR: Path   # set by main() — no default; must be supplied via --data-dir
+HOSP_DIR: Path   # set by main()
 # ─────────────────────────────────────────────────────────────────────────────
-
-HOSP_DIR = DATA_DIR / "mimic-iv-3.1" / "hosp"
 
 TYPE_VOCAB: dict[str, int] = {
     "special":   0,
@@ -217,8 +216,8 @@ def _build_medications(hadm_ids: set[int], admissions: pd.DataFrame) -> pd.DataF
 
 def _build_labs(subject_ids: set[int], hadm_ids: set[int],
                 admissions: pd.DataFrame) -> pd.DataFrame:
-    # DuckDB reads the 18 GB CSV in parallel and pushes the JOIN filters down
-    # into the scan, so only matching rows ever enter memory.
+    # Because of how massive (18GB) the lab events csv file is, DuckDB reads the 18 GB CSV in 
+    # parallel and pushes the JOIN filters down into the scan, so only matching rows ever enter memory.
     t0 = time.time()
     file_path = str(HOSP_DIR / "labevents.csv")
 
@@ -343,21 +342,20 @@ def tokenize_window(
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main(
+    data_dir: Path,
     cohort_name: str | None = None,
     output_name: str | None = None,
     max_seq_len: int | None = None,
-    data_dir: Path | None = None,
 ) -> None:
     global MAX_SEQ_LEN, MODELING_DIR, OUTPUT_DIR, DATA_DIR, HOSP_DIR
+    DATA_DIR = data_dir
+    HOSP_DIR = data_dir / "mimic-iv-3.1" / "hosp"
     if cohort_name is not None:
         MODELING_DIR = REPO_ROOT / "cohort_outputs" / cohort_name
     if output_name is not None:
         OUTPUT_DIR = REPO_ROOT / "tokenization_outputs" / output_name
     if max_seq_len is not None:
         MAX_SEQ_LEN = max_seq_len
-    if data_dir is not None:
-        DATA_DIR = data_dir
-        HOSP_DIR = data_dir / "mimic-iv-3.1" / "hosp"
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -483,4 +481,11 @@ def main(
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--data-dir",   required=True, type=Path, help="Path to MIMIC_IV_raw_data/")
+    p.add_argument("--cohort",     default=None,             help="Cohort name under cohort_outputs/")
+    p.add_argument("--name",       default=None,             help="Output name under tokenization_outputs/")
+    p.add_argument("--max-seq-len",default=None, type=int,   help="Max token sequence length")
+    a = p.parse_args()
+    main(data_dir=a.data_dir, cohort_name=a.cohort, output_name=a.name, max_seq_len=a.max_seq_len)

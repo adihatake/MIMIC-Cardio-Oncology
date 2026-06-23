@@ -40,11 +40,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--data-dir",
         metavar="PATH",
-        default=None,
-        help=(
-            "Path to the MIMIC_IV_raw_data directory. "
-            "Defaults to the path hard-coded in generate_cycle_modeling_table.py."
-        ),
+        required=True,
+        help="Path to the MIMIC_IV_raw_data directory.",
     )
     return parser.parse_args()
 
@@ -52,14 +49,13 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    data_dir = Path(args.data_dir).resolve() if args.data_dir else None
+    data_dir = Path(args.data_dir).resolve()
 
     print(f"cohort output name : {args.name}")
-    if data_dir:
-        print(f"data dir override  : {data_dir}")
+    print(f"data dir           : {data_dir}")
     print()
 
-    cohort_module.main(output_name=args.name, data_location=data_dir)
+    cohort_module.main(data_location=data_dir, output_name=args.name)
 
 
 if __name__ == "__main__":

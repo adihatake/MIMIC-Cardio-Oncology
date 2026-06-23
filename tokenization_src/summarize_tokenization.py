@@ -1,7 +1,8 @@
 """
 summarize_tokenization.py  —  ver1
 
-Prints summary statistics for a tokenized cycle dataset.
+Prints summary statistics for a tokenized cycle dataset and saves
+matplotlib figures to the same directory.
 
 Reads from tokenization_outputs/ver1/ (or a directory passed as argv[1]).
 
@@ -12,6 +13,13 @@ Statistics reported:
     Vocabulary      total size, breakdown by event type
     Splits          train / val / test counts (if splits.json exists)
     Age             distribution of decade buckets
+
+Figures saved (PNG):
+    label_distribution.png
+    sequence_length_histogram.png
+    vocabulary_breakdown.png
+    age_distribution.png
+    split_summary.png  (only if splits_summary.csv exists)
 """
 
 from __future__ import annotations
@@ -20,6 +28,7 @@ import json
 import sys
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
@@ -32,6 +41,118 @@ DEFAULT_DIR = Path(__file__).resolve().parent.parent / "tokenization_outputs" / 
 def _bar(value: float, width: int = 30, char: str = "█") -> str:
     filled = round(value * width)
     return char * filled + "░" * (width - filled)
+
+
+def _save_label_distribution(labels: torch.Tensor, samples: pd.DataFrame, out_dir: Path) -> None:
+    n_pos = int(labels.sum())
+    n_neg = int((labels == 0).sum())
+    pat_labels = samples.groupby("subject_id")["binary_label"].max()
+    n_pos_pat = int((pat_labels == 1).sum())
+    n_neg_pat = int((pat_labels == 0).sum())
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    for ax, (pos, neg, title) in zip(axes, [
+        (n_pos, n_neg, "Sample-level label distribution"),
+        (n_pos_pat, n_neg_pat, "Patient-level label distribution"),
+    ]):
+        bars = ax.bar(["Negative (0)", "Positive (1)"], [neg, pos], color=["#4c72b0", "#dd8452"])
+        ax.set_title(title)
+        ax.set_ylabel("Count")
+        total = pos + neg
+        for bar, count in zip(bars, [neg, pos]):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + total * 0.01,
+                    f"{count:,}\n({count/total:.1%})", ha="center", va="bottom", fontsize=9)
+        ax.set_ylim(0, max(neg, pos) * 1.18)
+
+    fig.tight_layout()
+    fig.savefig(out_dir / "label_distribution.png", dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {out_dir / 'label_distribution.png'}")
+
+
+def _save_seq_len_histogram(seq_lens: np.ndarray, max_seq_len: int, out_dir: Path) -> None:
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.hist(seq_lens, bins=50, color="#4c72b0", edgecolor="white", linewidth=0.4)
+    ax.axvline(max_seq_len, color="#c44e52", linestyle="--", linewidth=1.5,
+               label=f"max_seq_len = {max_seq_len}")
+    ax.axvline(float(np.median(seq_lens)), color="#55a868", linestyle="--", linewidth=1.5,
+               label=f"median = {int(np.median(seq_lens))}")
+    ax.set_xlabel("Sequence length (tokens)")
+    ax.set_ylabel("Number of samples")
+    ax.set_title("Sequence length distribution")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out_dir / "sequence_length_histogram.png", dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {out_dir / 'sequence_length_histogram.png'}")
+
+
+def _save_vocabulary_breakdown(vocab: dict, concept_ids: torch.Tensor, out_dir: Path) -> None:
+    concept_vocab = vocab["concept_vocab"]
+    by_type: dict[str, int] = {}
+    for tok in concept_vocab:
+        if "::" in tok:
+            etype = tok.split("::")[0]
+            by_type[etype] = by_type.get(etype, 0) + 1
+
+    etypes = sorted(by_type, key=lambda k: -by_type[k])
+    counts = [by_type[e] for e in etypes]
+
+    fig, ax = plt.subplots(figsize=(8, max(3, len(etypes) * 0.7 + 1)))
+    bars = ax.barh(etypes[::-1], counts[::-1], color="#4c72b0")
+    ax.set_xlabel("Number of unique tokens")
+    ax.set_title("Vocabulary breakdown by event type")
+    total = sum(counts)
+    for bar, count in zip(bars, counts[::-1]):
+        ax.text(bar.get_width() + total * 0.005, bar.get_y() + bar.get_height() / 2,
+                f"{count:,}  ({count/total:.1%})", va="center", fontsize=9)
+    ax.set_xlim(0, max(counts) * 1.2)
+    fig.tight_layout()
+    fig.savefig(out_dir / "vocabulary_breakdown.png", dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {out_dir / 'vocabulary_breakdown.png'}")
+
+
+def _save_age_distribution(age_ids: torch.Tensor, out_dir: Path) -> None:
+    decade_labels = [f"{i*10}–{i*10+9}" for i in range(10)]
+    age_arr = age_ids.numpy()
+    counts = [int((age_arr == i).sum()) for i in range(10)]
+
+    fig, ax = plt.subplots(figsize=(9, 4))
+    ax.bar(decade_labels, counts, color="#4c72b0", edgecolor="white", linewidth=0.4)
+    ax.set_xlabel("Age at prediction time")
+    ax.set_ylabel("Number of samples")
+    ax.set_title("Age distribution (decade buckets)")
+    fig.tight_layout()
+    fig.savefig(out_dir / "age_distribution.png", dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {out_dir / 'age_distribution.png'}")
+
+
+def _save_split_summary(split_df: pd.DataFrame, out_dir: Path) -> None:
+    splits = split_df["split"].tolist()
+    n_pos = split_df["n_positive"].tolist()
+    n_neg = split_df["n_negative"].tolist()
+
+    x = np.arange(len(splits))
+    width = 0.5
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ax.bar(x, n_neg, width, label="Negative (0)", color="#4c72b0")
+    ax.bar(x, n_pos, width, bottom=n_neg, label="Positive (1)", color="#dd8452")
+    ax.set_xticks(x)
+    ax.set_xticklabels([s.capitalize() for s in splits])
+    ax.set_ylabel("Number of samples")
+    ax.set_title("Train / Val / Test split composition")
+    ax.legend()
+    for i, (pos, neg) in enumerate(zip(n_pos, n_neg)):
+        total = pos + neg
+        ax.text(i, total + total * 0.01, f"{total:,}", ha="center", va="bottom", fontsize=9)
+    ax.set_ylim(0, max(p + n for p, n in zip(n_pos, n_neg)) * 1.12)
+    fig.tight_layout()
+    fig.savefig(out_dir / "split_summary.png", dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {out_dir / 'split_summary.png'}")
 
 
 def main(input_dir: Path = DEFAULT_DIR) -> None:
@@ -151,6 +272,17 @@ def main(input_dir: Path = DEFAULT_DIR) -> None:
     print(f"  Data dir:  {meta.get('data_dir', '?')}")
     print(f"  Saved to:  {input_dir}")
     print("=" * W)
+
+    # ── figures ───────────────────────────────────────────────────────────────
+    figures_dir = input_dir / "summarization_figures"
+    figures_dir.mkdir(exist_ok=True)
+    print(f"\n── Saving figures → {figures_dir} ──────────────────────────")
+    _save_label_distribution(labels, samples, figures_dir)
+    _save_seq_len_histogram(seq_lens, max_seq_len, figures_dir)
+    _save_vocabulary_breakdown(vocab, concept_ids, figures_dir)
+    _save_age_distribution(age_ids, figures_dir)
+    if splits_path.exists():
+        _save_split_summary(split_df, figures_dir)
 
 
 if __name__ == "__main__":

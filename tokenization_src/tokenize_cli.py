@@ -65,11 +65,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--data-dir",
         metavar="PATH",
-        default=None,
-        help=(
-            "Path to the MIMIC_IV_raw_data directory. "
-            "Defaults to the path hard-coded in tokenize_cycle_sequences.py."
-        ),
+        required=True,
+        help="Path to the MIMIC_IV_raw_data directory.",
     )
     parser.add_argument(
         "--split",
@@ -92,9 +89,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
 
-    run_split    = args.split    or args.all
+    run_split     = args.split    or args.all
     run_summarize = args.summarize or args.all
-    data_dir     = Path(args.data_dir).resolve() if args.data_dir else None
+    data_dir      = Path(args.data_dir).resolve()
 
     output_dir = REPO_ROOT / "tokenization_outputs" / args.name
 
@@ -104,8 +101,7 @@ def main() -> None:
     print(f"  cohort        : {args.cohort}")
     print(f"  output name   : {args.name}  →  {output_dir}")
     print(f"  max seq len   : {args.max_seq_len}")
-    if data_dir:
-        print(f"  data dir      : {data_dir}")
+    print(f"  data dir      : {data_dir}")
     print(f"  run split     : {run_split}")
     print(f"  run summarize : {run_summarize}")
     print("=" * 55)
@@ -114,16 +110,16 @@ def main() -> None:
     # ── step 1: tokenize ──────────────────────────────────────────────────────
     print("Step 1/3 — Tokenizing sequences...")
     tok_module.main(
+        data_dir=data_dir,
         cohort_name=args.cohort,
         output_name=args.name,
         max_seq_len=args.max_seq_len,
-        data_dir=data_dir,
     )
 
     # ── step 2: split ─────────────────────────────────────────────────────────
     if run_split:
         print("\nStep 2/3 — Splitting into train / val / test...")
-        split_module.main(input_name=args.name)
+        split_module.main(output_dir)
     else:
         print("\nStep 2/3 — Split skipped (pass --split or --all to enable).")
 
