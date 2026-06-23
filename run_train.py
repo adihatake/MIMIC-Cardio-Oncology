@@ -1,0 +1,53 @@
+"""
+run_train.py
+
+The file you edit constantly. Define one or more TrainConfigs and run them.
+
+Single run:
+    python run_train.py
+
+Multiple runs (grid search, ablations) are defined in the RUNS list below.
+"""
+
+from pathlib import Path
+
+from configs import TrainConfig
+import model_src.train as train_module
+
+# ── define runs ───────────────────────────────────────────────────────────────
+# Add as many configs as you want. Each gets its own output_dir.
+
+RUNS = [
+    TrainConfig(
+        data_dir   = Path("tokenization_outputs/ver1"),
+        output_dir = Path("experiment_outputs/test1"),
+        epochs     = 1,
+        batch_size = 32,
+        lr         = 1e-4,
+        d_model    = 128,
+        num_heads  = 4,
+        num_layers = 4,
+        ff_dim     = 512,
+        dropout    = 0.1,
+        device     = "auto",
+    ),
+
+    # Example: deeper model
+    # TrainConfig(
+    #     data_dir   = Path("tokenization_outputs/ver1"),
+    #     output_dir = Path("model_outputs/run2_deep"),
+    #     d_model    = 256,
+    #     num_layers = 8,
+    #     ff_dim     = 1024,
+    # ),
+]
+
+# ── run ───────────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    for i, cfg in enumerate(RUNS, 1):
+        print(f"\n{'=' * 55}")
+        print(f"  Run {i}/{len(RUNS)}  →  {cfg.output_dir}")
+        print(f"{'=' * 55}")
+        cfg.save(cfg.output_dir / "config.json")
+        train_module.train(cfg)
