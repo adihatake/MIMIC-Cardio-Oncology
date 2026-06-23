@@ -3,8 +3,6 @@
 - Affiliation: Department of Biomedical Engineering at the University of Calgary
 - Funding: Natural Sciences and Engineering Research Council of Canada (NSERC) Undergraduate Student Research Awards (USRA)
 
-This repo
-
 
 # Pipeline Usage Notes
 
