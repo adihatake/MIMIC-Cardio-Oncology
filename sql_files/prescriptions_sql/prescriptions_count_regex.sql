@@ -1,5 +1,5 @@
 -- Get patients who have the following oncology drugs
-CREATE VIEW oncology_drugs AS
+CREATE OR REPLACE VIEW oncology_drugs AS
 SELECT
     subject_id,
     hadm_id,

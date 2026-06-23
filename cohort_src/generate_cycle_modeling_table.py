@@ -24,8 +24,7 @@ import duckdb
 import pandas as pd
 
 # ── paths ──────────────────────────────────────────────────────────────────────
-REPO_ROOT     = Path(__file__).resolve().parent.parent
-DATA_LOCATION = Path("/Users/catherinebalajadia/Downloads/2026_Summer_Research/MIMIC_IV_raw_data").resolve()
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SQL_ROOT              = REPO_ROOT / "sql_files"
 DIAGNOSES_SQL_DIR     = SQL_ROOT / "diagnoses_sql"
@@ -57,8 +56,6 @@ def _execute_sql_file(con: duckdb.DuckDBPyConnection, path: Path) -> None:
     if not path.exists():
         raise FileNotFoundError(f"Missing SQL file: {path}")
     sql = path.read_text()
-    sql = sql.replace("CREATE VIEW active_cancer",   "CREATE OR REPLACE VIEW active_cancer")
-    sql = sql.replace("CREATE VIEW oncology_drugs",  "CREATE OR REPLACE VIEW oncology_drugs")
     con.execute(sql)
 
 
@@ -89,9 +86,9 @@ def _assign_patient_status(labels) -> str:
     return "unclassified_review"
 
 
-def main(output_name: str | None = None, data_location: Path | None = None) -> None:
+def main(data_location: Path, output_name: str | None = None) -> None:
     out_dir  = REPO_ROOT / "cohort_outputs" / output_name if output_name else OUTPUT_DIR
-    data_loc = data_location or DATA_LOCATION
+    data_loc = data_location
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Recompute SQL roots if data_location changed
@@ -222,4 +219,9 @@ def main(output_name: str | None = None, data_location: Path | None = None) -> N
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    p = argparse.ArgumentParser()
+    p.add_argument("--data-dir", required=True, type=Path, help="Path to MIMIC_IV_raw_data/")
+    p.add_argument("--name",     default=None,             help="Output name under cohort_outputs/")
+    a = p.parse_args()
+    main(data_location=a.data_dir, output_name=a.name)

@@ -1,5 +1,5 @@
 -- Get number of entries with active cancer diagnoses
-CREATE VIEW active_cancer AS (
+CREATE OR REPLACE VIEW active_cancer AS (
     SELECT DISTINCT
         subject_id,
         hadm_id,
