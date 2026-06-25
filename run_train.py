@@ -22,14 +22,19 @@ RUNS = [
         data_dir   = Path("tokenization_outputs/ver1"),
         output_dir = Path("experiment_outputs/test1"),
         epochs     = 1,
-        batch_size = 32,
+        batch_size = 8,
         lr         = 1e-4,
-        d_model    = 128,
-        num_heads  = 4,
-        num_layers = 4,
-        ff_dim     = 512,
+
+        d_model    = 768,
+        num_heads  = 12,
+        num_layers = 12,
+        ff_dim     = 3072,
         dropout    = 0.1,
+
         device     = "auto",
+        seed=42,
+        num_workers=4
+
     ),
 
     # Example: deeper model

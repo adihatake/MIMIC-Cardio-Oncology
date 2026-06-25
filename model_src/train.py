@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 import sys
 import time
 from pathlib import Path
@@ -39,6 +40,13 @@ from model_src.ehr_encoder import EHR_Encoder
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+def _set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
 
 # pick the best compute hardware
 def _device(requested: str) -> torch.device:
@@ -98,8 +106,11 @@ def train(args: argparse.Namespace | object) -> None:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    _set_seed(args.seed)
+
     device = _device(args.device)
     print(f"Device: {device}")
+    print(f"Seed         : {args.seed}")
 
     vocab, meta = _load_meta(data_dir)
     num_concepts  = len(vocab["concept_vocab"])
@@ -240,6 +251,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-workers",  type=int,   default=0)
     p.add_argument("--device",       default="auto",
                    help="'auto', 'cpu', 'cuda', or 'mps'.")
+    p.add_argument("--seed",         type=int,   default=42)
     return p.parse_args()
 
 

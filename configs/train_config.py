@@ -27,6 +27,7 @@ class TrainConfig:
     # ── runtime ───────────────────────────────────────────────────────────────
     num_workers: int = 0
     device:      str = "auto"   # "auto" | "cpu" | "cuda" | "mps"
+    seed:        int = 42
 
     # ── serialization ─────────────────────────────────────────────────────────
     def to_dict(self) -> dict:
