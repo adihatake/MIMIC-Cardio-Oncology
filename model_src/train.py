@@ -24,11 +24,13 @@ import random
 import socket
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import torch
 import torch.nn as nn
+import wandb
 from sklearn.metrics import roc_auc_score
 from torch.optim import AdamW
 from tqdm.auto import tqdm
@@ -174,6 +176,7 @@ def train(args: argparse.Namespace | object) -> None:
         "max_seq_len":    max_seq_len,
         "max_num_visits": max_num_visits,
         "n_params":       n_params,
+        "run_date":       datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "compute_host":   socket.gethostname(),
         "platform":       platform.platform(),
         "cpu":            platform.processor() or platform.machine(),
@@ -182,6 +185,15 @@ def train(args: argparse.Namespace | object) -> None:
     }
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2, default=str)
+
+    if args.use_wandb:
+        wandb.init(
+            project=args.wandb_project,
+            name=args.run_name,
+            config=config,
+            dir=str(output_dir),
+        )
+        wandb.watch(model, log="gradients", log_freq=100)
 
     best_auroc  = -1.0
     best_epoch  = -1
@@ -230,6 +242,15 @@ def train(args: argparse.Namespace | object) -> None:
         row = {"epoch": epoch, "train_loss": avg_train_loss, **val_metrics, "elapsed": elapsed}
         history.append(row)
 
+        if args.use_wandb:
+            wandb.log({
+                "train/loss": avg_train_loss,
+                "val/loss":   val_metrics["loss"],
+                "val/auroc":  val_metrics["auroc"],
+                "lr":         scheduler.get_last_lr()[0],
+                "epoch":      epoch,
+            })
+
         if is_best:
             best_auroc = val_metrics["auroc"]
             best_epoch = epoch
@@ -240,6 +261,12 @@ def train(args: argparse.Namespace | object) -> None:
 
     with open(output_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
+
+    if args.use_wandb:
+        artifact = wandb.Artifact("best_model", type="model")
+        artifact.add_file(str(output_dir / "best_model.pt"))
+        wandb.log_artifact(artifact)
+        wandb.finish()
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
@@ -265,7 +292,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-workers",  type=int,   default=0)
     p.add_argument("--device",       default="auto",
                    help="'auto', 'cpu', 'cuda', or 'mps'.")
-    p.add_argument("--seed",         type=int,   default=42)
+    p.add_argument("--seed",          type=int,   default=42)
+    p.add_argument("--use-wandb",     action="store_true", dest="use_wandb",
+                   help="Enable Weights & Biases logging.")
+    p.add_argument("--wandb-project", default="mimic-cardio-oncology", dest="wandb_project")
+    p.add_argument("--run-name",      default=None, dest="run_name",
+                   help="W&B run name (defaults to auto-generated).")
     return p.parse_args()
 
 
