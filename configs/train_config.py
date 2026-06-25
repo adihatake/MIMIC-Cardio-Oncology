@@ -29,6 +29,11 @@ class TrainConfig:
     device:      str = "auto"   # "auto" | "cpu" | "cuda" | "mps"
     seed:        int = 42
 
+    # ── experiment tracking ───────────────────────────────────────────────────
+    use_wandb:     bool       = False
+    wandb_project: str        = "mimic-cardio-oncology"
+    run_name:      str | None = None   # defaults to wandb auto-generated name
+
     # ── serialization ─────────────────────────────────────────────────────────
     def to_dict(self) -> dict:
         d = asdict(self)

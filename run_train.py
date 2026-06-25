@@ -31,10 +31,14 @@ RUNS = [
         ff_dim     = 3072,
         dropout    = 0.1,
 
-        device     = "auto",
-        seed=42,
-        num_workers=4
+        device      = "auto",
+        seed        = 42,
+        num_workers = 4,
 
+        # ── W&B tracking ─────────────────────────────────────────────────────
+        use_wandb     = False,              # flip to True to enable tracking
+        wandb_project = "mimic-cardio-oncology",
+        run_name      = None,               # None → W&B auto-generates a name
     ),
 
     # Example: deeper model
@@ -44,6 +48,8 @@ RUNS = [
     #     d_model    = 256,
     #     num_layers = 8,
     #     ff_dim     = 1024,
+    #     use_wandb  = True,
+    #     run_name   = "deep-ablation",
     # ),
 ]
 
