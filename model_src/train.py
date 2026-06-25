@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import random
+import socket
 import sys
 import time
 from pathlib import Path
@@ -160,11 +162,23 @@ def train(args: argparse.Namespace | object) -> None:
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay) ## Need to adjust/experiment with
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr / 10) ## Need to adjust/experiment with
 
+    if device.type == "cuda":
+        gpu_name = torch.cuda.get_device_name(device)
+        gpu_count = torch.cuda.device_count()
+    else:
+        gpu_name = None
+        gpu_count = 0
+
     config = vars(args) | {
         "num_concepts":   num_concepts,
         "max_seq_len":    max_seq_len,
         "max_num_visits": max_num_visits,
         "n_params":       n_params,
+        "compute_host":   socket.gethostname(),
+        "platform":       platform.platform(),
+        "cpu":            platform.processor() or platform.machine(),
+        "gpu_name":       gpu_name,
+        "gpu_count":      gpu_count,
     }
     with open(output_dir / "config.json", "w") as f:
         json.dump(config, f, indent=2, default=str)
