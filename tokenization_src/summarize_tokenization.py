@@ -16,7 +16,8 @@ Statistics reported:
 
 Figures saved (PNG):
     label_distribution.png
-    sequence_length_histogram.png
+    sequence_length_distributions.png
+    drug_cycles_distribution.png
     vocabulary_breakdown.png
     age_distribution.png
     split_summary.png  (only if splits_summary.csv exists)
@@ -70,21 +71,99 @@ def _save_label_distribution(labels: torch.Tensor, samples: pd.DataFrame, out_di
     print(f"  Saved: {out_dir / 'label_distribution.png'}")
 
 
-def _save_seq_len_histogram(seq_lens: np.ndarray, max_seq_len: int, out_dir: Path) -> None:
-    fig, ax = plt.subplots(figsize=(9, 4))
-    ax.hist(seq_lens, bins=50, color="#4c72b0", edgecolor="white", linewidth=0.4)
-    ax.axvline(max_seq_len, color="#c44e52", linestyle="--", linewidth=1.5,
-               label=f"max_seq_len = {max_seq_len}")
-    ax.axvline(float(np.median(seq_lens)), color="#55a868", linestyle="--", linewidth=1.5,
-               label=f"median = {int(np.median(seq_lens))}")
-    ax.set_xlabel("Sequence length (tokens)")
-    ax.set_ylabel("Number of samples")
-    ax.set_title("Sequence length distribution")
-    ax.legend()
+def _save_sequence_length_plots(
+    samples: pd.DataFrame,
+    seq_lens: np.ndarray,
+    max_seq_len: int,
+    out_dir: Path,
+) -> None:
+    """4-panel figure: raw vs post-truncation × sample level vs patient level."""
+    if "raw_seq_len" in samples.columns:
+        raw_lens = samples["raw_seq_len"].values
+    else:
+        print("  WARNING: raw_seq_len not found in samples — re-tokenize to get true pre-truncation lengths. Falling back to seq_len.")
+        raw_lens = samples["seq_len"].values
+
+    tmp = samples.copy()
+    tmp["trunc_len"] = seq_lens
+    raw_col = "raw_seq_len" if "raw_seq_len" in samples.columns else "seq_len"
+    pat_raw   = tmp.groupby("subject_id")[raw_col].mean().values
+    pat_trunc = tmp.groupby("subject_id")["trunc_len"].mean().values
+
+    fig, axes = plt.subplots(2, 2, figsize=(14, 9))
+    fig.suptitle("Sequence Length Distributions", fontsize=14, fontweight="bold")
+
+    # (lens, title, ylabel, show_cap_line)
+    panels = [
+        (axes[0, 0], raw_lens,   "Raw — Sample Level",
+         "Number of samples",  False),
+        (axes[0, 1], pat_raw,    "Raw — Patient Level  (mean across cycles)",
+         "Number of patients", False),
+        (axes[1, 0], seq_lens,   "Post-Tokenization / Truncated — Sample Level",
+         "Number of samples",  True),
+        (axes[1, 1], pat_trunc,  "Post-Tokenization / Truncated — Patient Level  (mean across cycles)",
+         "Number of patients", True),
+    ]
+
+    for ax, lens, title, ylabel, show_cap in panels:
+        ax.hist(lens, bins=50, color="#4c72b0", edgecolor="white", linewidth=0.4)
+        if show_cap:
+            ax.axvline(max_seq_len, color="#c44e52", linestyle="--", linewidth=1.4,
+                       label=f"max_seq_len = {max_seq_len}")
+        ax.axvline(float(np.median(lens)), color="#55a868", linestyle="--", linewidth=1.4,
+                   label=f"median = {np.median(lens):.0f}")
+        ax.set_xlabel("Sequence length (tokens)")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title, fontsize=10)
+        ax.legend(fontsize=8)
+
     fig.tight_layout()
-    fig.savefig(out_dir / "sequence_length_histogram.png", dpi=150)
+    path = out_dir / "sequence_length_distributions.png"
+    fig.savefig(path, dpi=150)
     plt.close(fig)
-    print(f"  Saved: {out_dir / 'sequence_length_histogram.png'}")
+    print(f"  Saved: {path}")
+
+
+def _save_drug_cycles_distribution(samples: pd.DataFrame, out_dir: Path) -> None:
+    """2-panel: cycle-number histogram (sample level) + total cycles per patient (patient level)."""
+    cpp = samples.groupby("subject_id")["cycle_number"].max()
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    fig.suptitle("Drug Cycle Distributions", fontsize=14, fontweight="bold")
+
+    # Sample level: which cycle index each sample sits at
+    ax = axes[0]
+    cnum = samples["cycle_number"].values
+    bins = np.arange(cnum.min() - 0.5, cnum.max() + 1.5, 1)
+    ax.hist(cnum, bins=bins, color="#4c72b0", edgecolor="white", linewidth=0.4)
+    ax.axvline(float(np.mean(cnum)), color="#c44e52", linestyle="--", linewidth=1.4,
+               label=f"mean = {np.mean(cnum):.1f}")
+    ax.axvline(float(np.median(cnum)), color="#55a868", linestyle="--", linewidth=1.4,
+               label=f"median = {np.median(cnum):.0f}")
+    ax.set_xlabel("Cycle number")
+    ax.set_ylabel("Number of samples")
+    ax.set_title("Cycle Number — Sample Level")
+    ax.legend(fontsize=8)
+
+    # Patient level: total drug cycles per patient
+    ax = axes[1]
+    cpp_vals = cpp.values
+    bins = np.arange(cpp_vals.min() - 0.5, cpp_vals.max() + 1.5, 1)
+    ax.hist(cpp_vals, bins=bins, color="#dd8452", edgecolor="white", linewidth=0.4)
+    ax.axvline(float(np.mean(cpp_vals)), color="#c44e52", linestyle="--", linewidth=1.4,
+               label=f"mean = {np.mean(cpp_vals):.1f}")
+    ax.axvline(float(np.median(cpp_vals)), color="#55a868", linestyle="--", linewidth=1.4,
+               label=f"median = {np.median(cpp_vals):.0f}")
+    ax.set_xlabel("Total drug cycles")
+    ax.set_ylabel("Number of patients")
+    ax.set_title("Drug Cycles per Patient — Patient Level")
+    ax.legend(fontsize=8)
+
+    fig.tight_layout()
+    path = out_dir / "drug_cycles_distribution.png"
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {path}")
 
 
 def _save_vocabulary_breakdown(vocab: dict, concept_ids: torch.Tensor, out_dir: Path) -> None:
@@ -113,16 +192,36 @@ def _save_vocabulary_breakdown(vocab: dict, concept_ids: torch.Tensor, out_dir: 
     print(f"  Saved: {out_dir / 'vocabulary_breakdown.png'}")
 
 
-def _save_age_distribution(age_ids: torch.Tensor, out_dir: Path) -> None:
+def _save_age_distribution(age_ids: torch.Tensor, samples: pd.DataFrame, out_dir: Path) -> None:
     decade_labels = [f"{i*10}–{i*10+9}" for i in range(10)]
     age_arr = age_ids.numpy()
-    counts = [int((age_arr == i).sum()) for i in range(10)]
+    sample_counts = [int((age_arr == i).sum()) for i in range(10)]
 
-    fig, ax = plt.subplots(figsize=(9, 4))
-    ax.bar(decade_labels, counts, color="#4c72b0", edgecolor="white", linewidth=0.4)
-    ax.set_xlabel("Age at prediction time")
-    ax.set_ylabel("Number of samples")
-    ax.set_title("Age distribution (decade buckets)")
+    # Patient-level: one age per patient (modal bucket across their cycles)
+    pat_ages = samples.groupby("subject_id")["age_id"].agg(
+        lambda x: x.mode().iloc[0]
+    ).values
+    patient_counts = [int((pat_ages == i).sum()) for i in range(10)]
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 4))
+    fig.suptitle("Age Distribution (decade buckets)", fontsize=13, fontweight="bold")
+
+    for ax, counts, ylabel, title in [
+        (axes[0], sample_counts,  "Number of samples",  "Sample Level"),
+        (axes[1], patient_counts, "Number of patients", "Patient Level"),
+    ]:
+        bars = ax.bar(decade_labels, counts, color="#4c72b0", edgecolor="white", linewidth=0.4)
+        ax.set_xlabel("Age at prediction time")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+        ax.tick_params(axis="x", rotation=30)
+        total = sum(counts)
+        for bar, count in zip(bars, counts):
+            if count > 0:
+                ax.text(bar.get_x() + bar.get_width() / 2,
+                        bar.get_height() + total * 0.005,
+                        f"{count:,}", ha="center", va="bottom", fontsize=8)
+
     fig.tight_layout()
     fig.savefig(out_dir / "age_distribution.png", dpi=150)
     plt.close(fig)
@@ -278,9 +377,10 @@ def main(input_dir: Path = DEFAULT_DIR) -> None:
     figures_dir.mkdir(exist_ok=True)
     print(f"\n── Saving figures → {figures_dir} ──────────────────────────")
     _save_label_distribution(labels, samples, figures_dir)
-    _save_seq_len_histogram(seq_lens, max_seq_len, figures_dir)
+    _save_sequence_length_plots(samples, seq_lens, max_seq_len, figures_dir)
+    _save_drug_cycles_distribution(samples, figures_dir)
     _save_vocabulary_breakdown(vocab, concept_ids, figures_dir)
-    _save_age_distribution(age_ids, figures_dir)
+    _save_age_distribution(age_ids, samples, figures_dir)
     if splits_path.exists():
         _save_split_summary(split_df, figures_dir)
 

@@ -321,6 +321,7 @@ def tokenize_window(
     visit_ids    = window["visit_id"].fillna(0).astype(int).tolist()
 
     budget = MAX_SEQ_LEN - 1
+    raw_seq_len = len(concept_ids) + 1  # +1 for CLS, before any truncation
     concept_ids = concept_ids[-budget:]
     type_ids    = type_ids[-budget:]
     visit_ids   = visit_ids[-budget:]
@@ -336,6 +337,7 @@ def tokenize_window(
         "visit_ids":    visit_ids,
         "position_ids": position_ids,
         "seq_len":      len(concept_ids),
+        "raw_seq_len":  raw_seq_len,
     }
 
 
@@ -401,6 +403,7 @@ def main(
             "prediction_time": pred_time,
             "binary_label":    label,
             "age_id":          age_id,
+            "raw_seq_len":     tok["raw_seq_len"],
             "seq_len":         tok["seq_len"],
         })
         token_sequences.append({**tok, "age_id": age_id, "label": label})
