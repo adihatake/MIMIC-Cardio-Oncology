@@ -32,6 +32,7 @@ import torch
 import torch.nn as nn
 import wandb
 from sklearn.metrics import roc_auc_score
+from torch.cuda.amp import GradScaler, autocast
 from torch.optim import AdamW
 from tqdm.auto import tqdm
 from torch.optim.lr_scheduler import CosineAnnealingLR
@@ -163,6 +164,7 @@ def train(args: argparse.Namespace | object) -> None:
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay) ## Need to adjust/experiment with
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr / 10) ## Need to adjust/experiment with
+    scaler    = GradScaler(enabled=device.type == "cuda")
 
     if device.type == "cuda":
         gpu_name = torch.cuda.get_device_name(device)
@@ -216,11 +218,14 @@ def train(args: argparse.Namespace | object) -> None:
             labels       = batch["label"].to(device)
 
             optimizer.zero_grad()
-            logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids)
-            loss   = criterion(logits, labels)
-            loss.backward()
+            with autocast(enabled=device.type == "cuda"):
+                logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids)
+                loss   = criterion(logits, labels)
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
             nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
 
             train_loss += loss.item() * len(labels)
             n          += len(labels)
