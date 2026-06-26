@@ -11,10 +11,14 @@ scipy==1.15.3
 # Check your HPC CUDA version with: nvcc --version  OR  module avail cuda
 torch==2.12.1
 
+# Experiment tracking (only required when use_wandb=True in run_train.py)
+wandb
+
 # Utilities
 duckdb==1.5.2
-tqdm==4.67.3
+tqdm==4.67.0
 matplotlib==3.10.8
+rich==14.2.0
 ipykernel==7.2.0
 
 # Uncomment if needed for waveform / audio processing:
