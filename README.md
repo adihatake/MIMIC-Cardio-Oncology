@@ -122,9 +122,10 @@ python tokenization_src/tokenize_cli.py \
 | `position_ids.pt` | Long tensor `(N, max_seq_len)` |
 | `age_ids.pt` | Long tensor `(N,)` — one per sample |
 | `labels.pt` | Long tensor `(N,)` — binary labels |
-| `samples.parquet` | Metadata table (subject_id, cycle_number, binary_label, …) |
+| `samples.csv` | Per-sample metadata (subject_id, cycle_number, prediction_time, binary_label, seq_len) |
+| `samples.parquet` | Same as above in Parquet format |
 | `vocab.json` | Concept and type vocabulary mappings |
-| `metadata.json` | `max_seq_len`, `positive_rate`, cohort name |
+| `metadata.json` | `max_seq_len`, `positive_rate`, vocab size, cohort stats |
 
 You can also run the tokenizer module directly:
 
@@ -173,7 +174,7 @@ python tokenization_src/summarize_tokenization.py tokenization_outputs/ver1
 
 Omit the path argument to use the default (`tokenization_outputs/ver1`).
 
-**Figures saved** (`tokenization_outputs/<name>/figures/`):
+**Figures saved** (`tokenization_outputs/<name>/summarization_figures/`):
 
 | File | Description |
 |---|---|
@@ -193,7 +194,7 @@ Requires `splits.json` to exist in the data directory (run Step 3 first).
 ```bash
 python model_src/train.py \
     --data-dir tokenization_outputs/ver1 \
-    --output-dir model_outputs/run1
+    --output-dir experiment_outputs/run1
 ```
 
 Quick debug run with a smaller model:
@@ -201,7 +202,7 @@ Quick debug run with a smaller model:
 ```bash
 python model_src/train.py \
     --data-dir tokenization_outputs/ver1 \
-    --output-dir model_outputs/debug \
+    --output-dir experiment_outputs/debug \
     --d-model 64 --num-heads 4 --num-layers 2 \
     --epochs 3 --batch-size 16
 ```
@@ -209,7 +210,7 @@ python model_src/train.py \
 | Argument | Default | Description |
 |---|---|---|
 | `--data-dir` | `tokenization_outputs/ver1` | Tokenization directory (must contain `splits.json`) |
-| `--output-dir` | `model_outputs/run1` | Where to save checkpoints and logs |
+| `--output-dir` | `experiment_outputs/run1` | Where to save checkpoints and logs |
 | `--epochs` | `20` | Number of training epochs |
 | `--batch-size` | `32` | Training batch size |
 | `--lr` | `1e-4` | AdamW learning rate |
@@ -221,14 +222,18 @@ python model_src/train.py \
 | `--dropout` | `0.1` | Dropout probability |
 | `--num-workers` | `0` | DataLoader worker processes |
 | `--device` | `auto` | `auto`, `cpu`, `cuda`, or `mps` |
+| `--seed` | `42` | Random seed for reproducibility |
+| `--use-wandb` | off | Enable Weights & Biases experiment tracking |
+| `--wandb-project` | `mimic-cardio-oncology` | W&B project name |
+| `--run-name` | `None` | W&B run name (auto-generated if omitted) |
 
-**Outputs** (`model_outputs/<run>/`):
+**Outputs** (`experiment_outputs/<run>/`):
 
 | File | Description |
 |---|---|
 | `best_model.pt` | State dict of the best checkpoint (by val AUROC) |
-| `config.json` | All hyperparameters + derived vocab/seq sizes |
-| `history.json` | Per-epoch train loss, val loss, val AUROC |
+| `config.json` | All hyperparameters, derived vocab/seq sizes, hardware info, and run date |
+| `history.json` | Per-epoch train loss, val loss, val AUROC, and elapsed time |
 
 ---
 
@@ -262,16 +267,19 @@ The file you edit most often. Define one or more `TrainConfig` objects in the `R
 RUNS = [
     TrainConfig(
         data_dir   = Path("tokenization_outputs/ver1"),
-        output_dir = Path("model_outputs/baseline"),
+        output_dir = Path("experiment_outputs/baseline"),
         d_model    = 128,
         num_layers = 4,
+        seed       = 42,
     ),
     TrainConfig(
         data_dir   = Path("tokenization_outputs/ver1"),
-        output_dir = Path("model_outputs/deeper"),
+        output_dir = Path("experiment_outputs/deeper"),
         d_model    = 256,
         num_layers = 8,
         ff_dim     = 1024,
+        use_wandb  = True,       # enable W&B for this run
+        run_name   = "deeper-ablation",
     ),
 ]
 ```
@@ -280,7 +288,8 @@ RUNS = [
 python run_train.py
 ```
 
-Each run saves its own `config.json` to `output_dir` alongside the checkpoint.
+Each run saves its own `config.json` to `output_dir` alongside the checkpoint.  
+Set `use_wandb = True` on any config to enable Weights & Biases logging for that run.
 
 ### `run_pipeline.py`
 
@@ -298,11 +307,107 @@ Toggle stages with the `RUN_*` flags at the top of the file.
 Configs can be saved and reloaded as JSON for experiment tracking:
 
 ```python
-cfg.save("model_outputs/run1/config.json")
-cfg = TrainConfig.load("model_outputs/run1/config.json")
+cfg.save("experiment_outputs/run1/config.json")
+cfg = TrainConfig.load("experiment_outputs/run1/config.json")
 ```
 
 `run_train.py` does this automatically for every run.
+
+---
+
+## Data exploration
+
+Scripts and notebooks for inspecting the tokenized dataset live in `data_exploration/`.
+
+### `data_exploration/inspect_patient.py`
+
+Visualize a single patient's tokenized EHR sequence in the terminal, and optionally run a model prediction on it.
+
+```bash
+# Random patient from the test split
+python data_exploration/inspect_patient.py
+
+# Specific index within the split (0-based)
+python data_exploration/inspect_patient.py --patient-idx 5
+
+# Look up by MIMIC subject_id directly
+python data_exploration/inspect_patient.py --subject-id 13595646
+
+# Subject with multiple chemotherapy cycles — pick cycle 1 (0-based)
+python data_exploration/inspect_patient.py --subject-id 13595646 --cycle-idx 1
+
+# Attach a model prediction
+python data_exploration/inspect_patient.py --patient-idx 5 --model-dir experiment_outputs/run1
+
+# Show all events per visit instead of truncating
+python data_exploration/inspect_patient.py --patient-idx 5 --max-per-visit 0
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--data-dir` | `tokenization_outputs/ver1` | Tokenization directory |
+| `--split` | `test` | Which split to sample from (`train`, `val`, `test`) |
+| `--patient-idx` | random | 0-based index within the split |
+| `--subject-id` | — | MIMIC subject_id (searches across all splits) |
+| `--cycle-idx` | `0` | Which cycle to show when a subject has multiple |
+| `--model-dir` | — | Experiment dir with `config.json` + `best_model.pt` |
+| `--max-per-visit` | `20` | Max events shown per visit (`0` = all) |
+
+Requires `rich`:  `pip install rich`
+
+---
+
+## Evaluation
+
+Post-training evaluation scripts live in `evaluation/`.
+
+### `evaluation/evaluate_model.py`
+
+Runs a trained checkpoint on a full data split and reports aggregate metrics and a per-sample result table.
+
+```bash
+# Evaluate on test split (default)
+python evaluation/evaluate_model.py --model-dir experiment_outputs/run1
+
+# Evaluate on val split
+python evaluation/evaluate_model.py --model-dir experiment_outputs/run1 --split val
+
+# Save per-sample predictions to CSV
+python evaluation/evaluate_model.py --model-dir experiment_outputs/run1 \
+    --output-csv experiment_outputs/run1/test_results.csv
+```
+
+Reports: AUROC, accuracy, precision, recall, F1, confusion matrix, and a per-sample table with subject_id, cycle, true label, predicted label, and P(cardiotoxic).
+
+| Argument | Default | Description |
+|---|---|---|
+| `--model-dir` | required | Experiment dir with `config.json` + `best_model.pt` |
+| `--data-dir` | from config | Tokenization directory (read from `config.json` if omitted) |
+| `--split` | `test` | Which split to evaluate on |
+| `--batch-size` | `32` | Inference batch size |
+| `--threshold` | `0.5` | Decision threshold for binary predictions |
+| `--max-rows` | `50` | Max rows shown in the per-sample table |
+| `--output-csv` | — | Optional path to save full per-sample results |
+
+### `evaluation/plot_history.py`
+
+Plots training loss and validation AUROC curves from `history.json`. Supports comparing multiple runs side by side.
+
+```bash
+# Single run — display interactively
+python evaluation/plot_history.py --model-dir experiment_outputs/run1
+
+# Save to PNG
+python evaluation/plot_history.py --model-dir experiment_outputs/run1 \
+    --save experiment_outputs/run1/training_curves.png
+
+# Compare multiple runs on the same plot
+python evaluation/plot_history.py \
+    --model-dir experiment_outputs/run1 experiment_outputs/run2 \
+    --save comparison.png
+```
+
+Requires `matplotlib`: `pip install matplotlib`
 
 ---
 
@@ -343,7 +448,7 @@ python tokenization_src/tokenize_cli.py \
 # 3. Train
 python model_src/train.py \
     --data-dir tokenization_outputs/ver1 \
-    --output-dir model_outputs/run1
+    --output-dir experiment_outputs/run1
 ```
 
 **Via runner scripts** (edit `data_dir` in each file first):
