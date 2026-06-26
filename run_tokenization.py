@@ -15,11 +15,12 @@ import tokenization_src.summarize_tokenization as summary_module
 
 # ── config ────────────────────────────────────────────────────────────────────
 
+REPO_ROOT = Path(__file__).resolve().parent
 cfg = TokenizationConfig(
-    data_dir      = Path("/path/to/MIMIC_IV_raw_data"),
+    data_dir      = REPO_ROOT.parent / "MIMIC_IV_raw_data",
     cohort_name   = "cycle_modeling_ver2",
-    output_name   = "ver1",
-    max_seq_len   = 600,
+    output_name   = "Jun26",
+    max_seq_len   = 2048,
     run_split     = True,
     run_summarize = True,
 )

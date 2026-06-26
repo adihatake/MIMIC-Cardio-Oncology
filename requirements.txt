@@ -7,9 +7,9 @@ scipy==1.15.3
 # Deep learning
 # Install torch BEFORE running `pip install -r requirements.txt` using one of:
 #   CPU:             pip install torch==2.12.1 --index-url https://download.pytorch.org/whl/cpu
-#   GPU (CUDA):      pip install torch==2.12.1 --index-url https://download.pytorch.org/whl/cu124
+#   GPU (CUDA):      pip install torch==2.12.1 --index-url https://download.pytorch.org/whl/cu126
 # Check your HPC CUDA version with: nvcc --version  OR  module avail cuda
-torch==2.12.1
+torch==2.12.1 --index-url https://download.pytorch.org/whl/cu126
 
 # Experiment tracking (only required when use_wandb=True in run_train.py)
 wandb
@@ -20,6 +20,8 @@ tqdm==4.67.0
 matplotlib==3.10.8
 rich==14.2.0
 ipykernel==7.2.0
+pyarrow
+fastparquet
 
 # Uncomment if needed for waveform / audio processing:
 # wfdb==4.3.1
