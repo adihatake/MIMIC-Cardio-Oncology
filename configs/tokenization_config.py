@@ -11,11 +11,13 @@ class TokenizationConfig:
     data_dir: Path
 
     # optional
-    cohort_name: str  = "cycle_modeling_ver2"
-    output_name: str  = "ver1"
-    max_seq_len: int  = 600
-    run_split:   bool = True
-    run_summarize: bool = True
+    cohort_name:             str  = "cycle_modeling_ver2"
+    output_name:             str  = "ver1"
+    max_seq_len:             int  = 600
+    run_split:               bool = False
+    run_summarize:           bool = True
+    insert_att:              bool = False  # CEHR-BERT ATT tokens between visits
+    insert_visit_delimiters: bool = False  # [V_START]/[V_END] around each visit
 
     # ── derived (read-only) ───────────────────────────────────────────────────
     @property

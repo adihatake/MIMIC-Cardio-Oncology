@@ -6,20 +6,33 @@ The file you edit constantly. Define one or more TrainConfigs and run them.
 Single run:
     python run_train.py
 
-Multiple runs (grid search, ablations) are defined in the RUNS list below.
+─── Seeds and splits ───────────────────────────────────────────────────────────
+Each TrainConfig.seed controls TWO things independently:
 
-─── Time-embedding ablation ────────────────────────────────────────────────────
-CEHR-BERT uses two mechanisms for temporal information:
-  1. TimeEmbeddingLayer: sin((days_since_2000 / 365.25) × w + φ) where w, φ are
-     learned — added to the token embedding sum at each position.
-  2. Artificial Time Tokens (ATT): discrete vocabulary tokens (W0–W3, M1–M11, LT)
-     inserted between consecutive visits during tokenization.
+  1. Patient split  — which patients land in train/val/test (computed at runtime
+                      from samples.parquet; tokenization produces no splits.json)
+  2. Model init     — weight initialisation and dropout randomness
 
-To run the ablation:
-  Step 1 — Regenerate tokenization with dates.pt (required for time embedding):
-      python run_tokenization.py   # or tokenize_cli.py with your data-dir
+To estimate variance, repeat each ablation across multiple seeds:
+    SEEDS = [42, 43, 44]
+    RUNS  = [TrainConfig(**_BASE, seed=s, output_dir=f".../{name}_seed{s}", ...)
+             for s in SEEDS for name, kwargs in ABLATIONS]
+────────────────────────────────────────────────────────────────────────────────
 
-  Step 2 — Run both configs below.  The two output_dirs give side-by-side results.
+─── Embedding ablations ────────────────────────────────────────────────────────
+Three ablation dimensions, each independently toggleable:
+
+  use_time_embedding   — additive sinusoidal time per token (CEHR-BERT)
+  use_concat_embedding — concat [concept, time, age_sin, pos] → FC → GELU
+                         + residual type/visit/segment  (CEHR-BERT / EHRMamba)
+
+Tokenisation flags (set when running run_tokenization.py):
+  insert_att               ATT tokens (W0-W3, M1-M11, LT) between visits
+  insert_visit_delimiters  [V_START]/[V_END] around each visit block
+
+All model ablations require re-running tokenization to generate:
+  dates.pt      — needed by use_time_embedding and use_concat_embedding
+  age_years.pt  — needed by use_concat_embedding
 ────────────────────────────────────────────────────────────────────────────────
 """
 
@@ -30,41 +43,57 @@ import model_src.train as train_module
 
 # ── shared hyperparameters ────────────────────────────────────────────────────
 _BASE = dict(
-    data_dir    = Path("tokenization_outputs/ver1"),
-    epochs      = 1,
-    batch_size  = 8,
-    lr          = 1e-4,
-    d_model     = 768,
-    num_heads   = 12,
-    num_layers  = 12,
-    ff_dim      = 3072,
-    dropout     = 0.1,
-    device      = "auto",
-    seed        = 42,
-    num_workers = 6,
-    use_wandb   = False,
+    data_dir      = Path("tokenization_outputs/Jun26_1000"),
+    epochs        = 1,
+    batch_size    = 8,
+    lr            = 1e-4,
+    d_model       = 768,
+    num_heads     = 12,
+    num_layers    = 12,
+    ff_dim        = 3072,
+    dropout       = 0.1,
+    device        = "auto",
+    seed          = 42,       # controls both patient split AND model init
+    num_workers   = 6,
+    use_wandb     = False,
     wandb_project = "mimic-cardio-oncology",
 )
 
 # ── define runs ───────────────────────────────────────────────────────────────
+# To run multi-seed experiments, expand like:
+#   SEEDS = [42, 43, 44]
+#   RUNS  = [TrainConfig(**_BASE, seed=s,
+#                        output_dir=Path(f"experiment_outputs/baseline_seed{s}"),
+#                        run_name=f"baseline-seed{s}")
+#            for s in SEEDS]
 
 RUNS = [
-    # ── Baseline: no time embedding (sequential position only) ────────────────
+    # 1. Baseline: additive sum, decade-bucket age, sequential position only
     TrainConfig(
         **_BASE,
-        output_dir         = Path("experiment_outputs/ablation_no_time_emb"),
-        use_time_embedding = False,
-        run_name           = "baseline-no-time-emb",
+        output_dir           = Path("experiment_outputs/ablation_baseline"),
+        use_time_embedding   = False,
+        use_concat_embedding = False,
+        run_name             = "baseline",
     ),
 
-    # ── CEHR-BERT time embedding ablation ─────────────────────────────────────
-    # Adds sin((days_since_2000 / 365.25) × w + φ) per token.
-    # Requires dates.pt — re-run tokenization first if it is missing.
+    # 2. + additive CEHR-BERT time embedding (requires dates.pt)
     TrainConfig(
         **_BASE,
-        output_dir         = Path("experiment_outputs/ablation_time_emb"),
-        use_time_embedding = True,
-        run_name           = "cehrbert-time-emb",
+        output_dir           = Path("experiment_outputs/ablation_time_emb"),
+        use_time_embedding   = True,
+        use_concat_embedding = False,
+        run_name             = "additive-time-emb",
+    ),
+
+    # 3. Concat embedding — CEHR-BERT / EHRMamba style
+    #    (requires dates.pt + age_years.pt; implies time always on)
+    TrainConfig(
+        **_BASE,
+        output_dir           = Path("experiment_outputs/ablation_concat_emb"),
+        use_time_embedding   = False,   # time is part of concat; this flag unused
+        use_concat_embedding = True,
+        run_name             = "concat-emb-cehrbert",
     ),
 ]
 

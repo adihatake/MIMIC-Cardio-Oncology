@@ -6,7 +6,10 @@
 
 # Pipeline Usage Notes
 
-End-to-end pipeline: **cohort → tokenization → split → summarize → train**
+End-to-end pipeline: **cohort → tokenization → summarize → train**
+
+Splits are computed per training run from the run's seed — not generated during tokenization.  
+This allows multi-seed experiments (seed = 42, 43, 44 …) each with independent patient assignments.
 
 All scripts are run from the **repo root** unless noted otherwise.
 
@@ -91,15 +94,14 @@ python tokenization_src/tokenize_cli.py \
     --name ver1
 ```
 
-Add `--split` and/or `--summarize` (or `--all`) to run those steps in one command:
+Add `--summarize` to print cohort statistics and save figures in the same command:
 
 ```bash
-# Tokenize + split + summarize in one go
 python tokenization_src/tokenize_cli.py \
     --data-dir <DATA_DIR> \
     --cohort cycle_modeling_ver2 \
     --name ver1 \
-    --all
+    --summarize
 ```
 
 | Argument | Required | Default | Description |
@@ -108,9 +110,9 @@ python tokenization_src/tokenize_cli.py \
 | `--cohort` | no | `cycle_modeling_ver2` | Source cohort directory under `cohort_outputs/` |
 | `--name` | no | `ver1` | Output subdirectory under `tokenization_outputs/` |
 | `--max-seq-len` | no | `600` | Maximum token sequence length (truncates oldest events) |
-| `--split` | no | off | Run stratified patient-level split after tokenizing |
 | `--summarize` | no | off | Print summary statistics and save figures after tokenizing |
-| `--all` | no | off | Equivalent to `--split --summarize` |
+| `--insert-att` | no | off | Insert CEHR-BERT Artificial Time Tokens (`W0`–`W3`, `M1`–`M11`, `LT`) between consecutive visits |
+| `--insert-visit-delimiters` | no | off | Wrap each visit's events with `[V_START]`/`[V_END]` tokens |
 
 **Outputs** (`tokenization_outputs/<name>/`):
 
@@ -120,12 +122,15 @@ python tokenization_src/tokenize_cli.py \
 | `type_ids.pt` | Long tensor `(N, max_seq_len)` |
 | `visit_ids.pt` | Long tensor `(N, max_seq_len)` |
 | `position_ids.pt` | Long tensor `(N, max_seq_len)` |
-| `age_ids.pt` | Long tensor `(N,)` — one per sample |
+| `dates.pt` | Long tensor `(N, max_seq_len)` — days since 2000-01-01 per token; used by time embedding |
+| `age_ids.pt` | Long tensor `(N,)` — decade bucket (0–9); used in additive baseline |
+| `age_years.pt` | Float tensor `(N,)` — continuous age in years; used by concat embedding |
 | `labels.pt` | Long tensor `(N,)` — binary labels |
+| `attention_mask.pt` | Bool tensor `(N, max_seq_len)` |
 | `samples.csv` | Per-sample metadata (subject_id, cycle_number, prediction_time, binary_label, seq_len) |
 | `samples.parquet` | Same as above in Parquet format |
-| `vocab.json` | Concept and type vocabulary mappings |
-| `metadata.json` | `max_seq_len`, `positive_rate`, vocab size, cohort stats |
+| `vocab.json` | Concept and type vocabulary mappings (includes ATT tokens `W0`–`W3`, `M1`–`M11`, `LT`) |
+| `metadata.json` | `max_seq_len`, `positive_rate`, vocab size, cohort stats, tokenisation flags |
 
 You can also run the tokenizer module directly:
 
@@ -134,36 +139,40 @@ python tokenization_src/tokenize_cycle_sequences.py \
     --data-dir <DATA_DIR> \
     --cohort cycle_modeling_ver2 \
     --name ver1 \
-    --max-seq-len 600
+    --max-seq-len 600 \
+    --insert-att \
+    --insert-visit-delimiters
 ```
 
----
+### Sequence structure
 
-## Step 3 — Split (standalone)
-
-Creates a stratified patient-level train / val / test split (70 / 15 / 15).  
-Splitting is at the **patient level** — all cycles for a patient go to the same partition.
-
-```bash
-python tokenization_src/split_dataset.py tokenization_outputs/ver1
+Without optional flags:
+```
+[CLS] dx1 lab1 lab2 dx2 lab3 ...
 ```
 
-Omit the path argument to use the default (`tokenization_outputs/ver1`):
-
-```bash
-python tokenization_src/split_dataset.py
+With `--insert-visit-delimiters`:
+```
+[CLS] [V_START] dx1 lab1 [V_END] [V_START] dx2 lab3 [V_END] ...
 ```
 
-**Outputs** (written into the same directory):
+With `--insert-att` and `--insert-visit-delimiters` (CEHR-BERT style):
+```
+[CLS] [V_START] dx1 lab1 [V_END] [W2] [V_START] dx2 [V_END] [LT] [V_START] lab3 [V_END]
+         ^^^ visit 1 ^^^        ^ATT^      ^^^ visit 2 ^^^         ^ATT^   ^^^ visit 3 ^^^
+```
 
-| File | Description |
+ATT token thresholds (CEHR-BERT `CEHR_BERT` mode):
+
+| Token | Inter-visit gap |
 |---|---|
-| `splits.json` | Subject ID lists and row indices for train / val / test |
-| `splits_summary.csv` | Per-split patient count, sample count, positive rate |
+| `W0`–`W3` | 0–27 days (weekly bins) |
+| `M1`–`M11` | 28–359 days (monthly bins) |
+| `LT` | ≥ 360 days |
 
 ---
 
-## Step 4 — Summarize (standalone)
+## Step 3 — Summarize (standalone)
 
 Prints cohort statistics and saves matplotlib figures.  
 Can be re-run at any time without re-tokenizing.
@@ -186,10 +195,9 @@ Omit the path argument to use the default (`tokenization_outputs/ver1`).
 
 ---
 
-## Step 5 — Train
+## Step 4 — Train
 
-Trains the BERT-style EHR encoder on the tokenized and split dataset.  
-Requires `splits.json` to exist in the data directory (run Step 3 first).
+Trains the BERT-style EHR encoder. The patient split (70 / 15 / 15) is computed at runtime from `samples.parquet` using `--seed`, so no separate split step is needed. The same seed also controls weight initialisation, making each run fully reproducible.
 
 ```bash
 python model_src/train.py \
@@ -209,7 +217,7 @@ python model_src/train.py \
 
 | Argument | Default | Description |
 |---|---|---|
-| `--data-dir` | `tokenization_outputs/ver1` | Tokenization directory (must contain `splits.json`) |
+| `--data-dir` | `tokenization_outputs/ver1` | Tokenization directory |
 | `--output-dir` | `experiment_outputs/run1` | Where to save checkpoints and logs |
 | `--epochs` | `20` | Number of training epochs |
 | `--batch-size` | `32` | Training batch size |
@@ -222,10 +230,12 @@ python model_src/train.py \
 | `--dropout` | `0.1` | Dropout probability |
 | `--num-workers` | `0` | DataLoader worker processes |
 | `--device` | `auto` | `auto`, `cpu`, `cuda`, or `mps` |
-| `--seed` | `42` | Random seed for reproducibility |
+| `--seed` | `42` | Controls both the patient split and weight initialisation |
 | `--use-wandb` | off | Enable Weights & Biases experiment tracking |
 | `--wandb-project` | `mimic-cardio-oncology` | W&B project name |
 | `--run-name` | `None` | W&B run name (auto-generated if omitted) |
+| `--use-time-embedding` | off | Additive CEHR-BERT sinusoidal time embedding (requires `dates.pt`) |
+| `--use-concat-embedding` | off | CEHR-BERT/EHRMamba concat→FC→GELU combination (requires `dates.pt` + `age_years.pt`) |
 
 **Outputs** (`experiment_outputs/<run>/`):
 
@@ -234,6 +244,80 @@ python model_src/train.py \
 | `best_model.pt` | State dict of the best checkpoint (by val AUROC) |
 | `config.json` | All hyperparameters, derived vocab/seq sizes, hardware info, and run date |
 | `history.json` | Per-epoch train loss, val loss, val AUROC, and elapsed time |
+| `test_metrics.json` | AUROC and loss on the held-out test split, evaluated once after training |
+
+---
+
+## Model architecture
+
+The model is a BERT-style encoder (`EHR_Encoder`) with three embedding modes, controlled by flags in `TrainConfig` / `--use-*` CLI args:
+
+### Embedding modes
+
+**Baseline (additive, BEHRT-style)** — default:
+```
+sum(concept, type, visit, segment, position, age_bucket) → LayerNorm → Dropout
+```
+
+**+ Additive time embedding** (`use_time_embedding=True`):
+```
+sum(concept, type, visit, segment, position, age_bucket, time_sinusoidal) → LayerNorm → Dropout
+```
+Adds a per-token sinusoidal time embedding: `sin((days_since_2000 / 365.25) × w + φ)` where `w` and `φ` are learned parameters (CEHR-BERT formula). Requires `dates.pt`.
+
+**Concat embedding** (`use_concat_embedding=True`, CEHR-BERT / EHRMamba style):
+```
+Linear( cat([concept(d), time_sinusoidal(d), age_sinusoidal(d), position(d)]) ) → GELU
++ type + visit + segment → LayerNorm → Dropout
+```
+Replaces the additive sum with a learned projection of the four temporally-sensitive embeddings. Age uses a continuous sinusoidal embedding on the exact age in years (not decade buckets). Requires both `dates.pt` and `age_years.pt`.
+
+### Embedding components
+
+| Component | Additive mode | Concat mode |
+|---|---|---|
+| Concept | `nn.Embedding(vocab, d)` | same |
+| Type | `nn.Embedding(5, d)` | additive residual |
+| Visit | `nn.Embedding(max_visits, d)` | additive residual |
+| Segment | `nn.Embedding(2, d)`, `visit_id % 2` | additive residual |
+| Position | `nn.Embedding(max_seq_len, d)` | in concat |
+| Age | `nn.Embedding(10, d)`, decade bucket | `sin(age_years × w + φ)`, in concat |
+| Time | `sin((days/365.25) × w + φ)`, optional additive | `sin((days/365.25) × w + φ)`, in concat |
+| Projection | — | `nn.Linear(4d → d)` |
+
+### Encoder
+
+```
+EHR_Event_Embedding → N × TransformerEncoderLayer (pre-norm, GELU FFN) → CLS pooling → Linear(d → 2)
+```
+
+- Optimizer: AdamW
+- Scheduler: CosineAnnealingLR (`T_max=epochs`, `eta_min=lr/10`)
+- Loss: CrossEntropyLoss with inverse-frequency class weights
+- Mixed precision: `torch.amp.autocast` + `GradScaler` (CUDA only)
+- Gradient clipping: `max_norm=1.0`
+- Best checkpoint saved by validation AUROC
+
+---
+
+## Embedding ablations
+
+Three ablation axes, all independently togglable via `TrainConfig`:
+
+| `run_train.py` config | `use_time_embedding` | `use_concat_embedding` | Notes |
+|---|---|---|---|
+| `ablation_baseline` | False | False | additive sum, decade-bucket age |
+| `ablation_time_emb` | True | False | + additive sinusoidal time |
+| `ablation_concat_emb` | False | True | concat→FC→GELU, continuous age |
+
+Tokenization-level ablations (set in `run_tokenization.py` / `TokenizationConfig`):
+
+| Flag | Effect |
+|---|---|
+| `insert_att=True` | ATT tokens between visits (`W0`–`W3`, `M1`–`M11`, `LT`) |
+| `insert_visit_delimiters=True` | `[V_START]`/`[V_END]` around each hospital visit |
+
+All model ablations require running tokenization first to generate `dates.pt` and `age_years.pt`.
 
 ---
 
@@ -252,7 +336,7 @@ python run_cohort.py
 
 ### `run_tokenization.py`
 
-Edit `data_dir`, `cohort_name`, `output_name`, `max_seq_len`, and the `run_split` / `run_summarize` flags, then:
+Edit `data_dir`, `cohort_name`, `output_name`, `max_seq_len`, the `run_summarize` flag, and optionally `insert_att` / `insert_visit_delimiters`, then:
 
 ```bash
 python run_tokenization.py
@@ -262,33 +346,61 @@ python run_tokenization.py
 
 The file you edit most often. Define one or more `TrainConfig` objects in the `RUNS` list — each gets its own `output_dir`. The script iterates through all of them sequentially.
 
+Each `seed` value independently controls two things:
+- **Patient split** — which patients go to train / val / test (70 / 15 / 15, computed at runtime)
+- **Model initialisation** — weight init and dropout randomness
+
+**Three-ablation example:**
+
 ```python
-# run_train.py — example with two configs
 RUNS = [
     TrainConfig(
-        data_dir   = Path("tokenization_outputs/ver1"),
-        output_dir = Path("experiment_outputs/baseline"),
-        d_model    = 128,
-        num_layers = 4,
-        seed       = 42,
+        data_dir             = Path("tokenization_outputs/ver1"),
+        output_dir           = Path("experiment_outputs/ablation_baseline"),
+        d_model              = 768, num_heads = 12, num_layers = 12, ff_dim = 3072,
+        use_time_embedding   = False,
+        use_concat_embedding = False,
+        run_name             = "baseline",
     ),
     TrainConfig(
-        data_dir   = Path("tokenization_outputs/ver1"),
-        output_dir = Path("experiment_outputs/deeper"),
-        d_model    = 256,
-        num_layers = 8,
-        ff_dim     = 1024,
-        use_wandb  = True,       # enable W&B for this run
-        run_name   = "deeper-ablation",
+        data_dir             = Path("tokenization_outputs/ver1"),
+        output_dir           = Path("experiment_outputs/ablation_time_emb"),
+        use_time_embedding   = True,   # requires dates.pt
+        use_concat_embedding = False,
+        run_name             = "additive-time-emb",
+    ),
+    TrainConfig(
+        data_dir             = Path("tokenization_outputs/ver1"),
+        output_dir           = Path("experiment_outputs/ablation_concat_emb"),
+        use_time_embedding   = False,
+        use_concat_embedding = True,   # requires dates.pt + age_years.pt
+        run_name             = "concat-emb-cehrbert",
     ),
 ]
 ```
+
+**Multi-seed example** (repeat across seeds to estimate variance):
+
+```python
+SEEDS = [42, 43, 44]
+RUNS = [
+    TrainConfig(
+        data_dir   = Path("tokenization_outputs/ver1"),
+        output_dir = Path(f"experiment_outputs/baseline_seed{s}"),
+        seed       = s,
+        run_name   = f"baseline-seed{s}",
+    )
+    for s in SEEDS
+]
+```
+
+Each seed produces a different patient split and model initialisation. Average `test_metrics.json` across seeds to report mean ± std AUROC.
 
 ```bash
 python run_train.py
 ```
 
-Each run saves its own `config.json` to `output_dir` alongside the checkpoint.  
+Each run saves its own `config.json` and `test_metrics.json` to `output_dir`.  
 Set `use_wandb = True` on any config to enable Weights & Biases logging for that run.
 
 ### `run_pipeline.py`
@@ -363,7 +475,9 @@ Post-training evaluation scripts live in `evaluation/`.
 
 ### `evaluation/evaluate_model.py`
 
-Runs a trained checkpoint on a full data split and reports aggregate metrics and a per-sample result table.
+Runs a trained checkpoint on a full data split and reports aggregate metrics and a per-sample result table. The split is reconstructed from the seed in `config.json`, so it exactly matches the split used during training — no `splits.json` needed.
+
+Note: `train.py` already evaluates the test split automatically and saves `test_metrics.json`. Use this script for deeper per-sample analysis or to re-evaluate on a different split.
 
 ```bash
 # Evaluate on test split (default)
@@ -383,7 +497,7 @@ Reports: AUROC, accuracy, precision, recall, F1, confusion matrix, and a per-sam
 |---|---|---|
 | `--model-dir` | required | Experiment dir with `config.json` + `best_model.pt` |
 | `--data-dir` | from config | Tokenization directory (read from `config.json` if omitted) |
-| `--split` | `test` | Which split to evaluate on |
+| `--split` | `test` | Which split to evaluate on (`train`, `val`, `test`) |
 | `--batch-size` | `32` | Inference batch size |
 | `--threshold` | `0.5` | Decision threshold for binary predictions |
 | `--max-rows` | `50` | Max rows shown in the per-sample table |
@@ -416,7 +530,7 @@ Requires `matplotlib`: `pip install matplotlib`
 Verify individual modules without the full dataset:
 
 ```bash
-# Embedding layer
+# Embedding layer (all three modes)
 python model_src/embedding_layers.py
 
 # Encoder architecture
@@ -438,17 +552,18 @@ python cohort_src/cohort_cli.py \
     --data-dir <DATA_DIR> \
     --name cycle_modeling_ver2
 
-# 2. Tokenize, split, and summarize
+# 2. Tokenize and summarize (no split — computed per training run)
 python tokenization_src/tokenize_cli.py \
     --data-dir <DATA_DIR> \
     --cohort cycle_modeling_ver2 \
     --name ver1 \
-    --all
+    --summarize
 
-# 3. Train
+# 3. Train (split computed from --seed; test metrics saved to experiment_outputs/run1/test_metrics.json)
 python model_src/train.py \
     --data-dir tokenization_outputs/ver1 \
-    --output-dir experiment_outputs/run1
+    --output-dir experiment_outputs/run1 \
+    --seed 42
 ```
 
 **Via runner scripts** (edit `data_dir` in each file first):
@@ -464,3 +579,48 @@ Or all at once:
 ```bash
 python run_pipeline.py
 ```
+
+### With CEHR-BERT temporal features enabled
+
+```bash
+# 2. Tokenize with time features
+python tokenization_src/tokenize_cli.py \
+    --data-dir <DATA_DIR> \
+    --cohort cycle_modeling_ver2 \
+    --name ver1_cehrbert \
+    --summarize \
+    --insert-att \
+    --insert-visit-delimiters
+
+# 3a. Baseline (no time embedding)
+python model_src/train.py \
+    --data-dir tokenization_outputs/ver1_cehrbert \
+    --output-dir experiment_outputs/ablation_baseline
+
+# 3b. CEHR-BERT concat embedding
+python model_src/train.py \
+    --data-dir tokenization_outputs/ver1_cehrbert \
+    --output-dir experiment_outputs/ablation_concat_emb \
+    --use-concat-embedding
+```
+
+Or define all three ablation configs in `run_train.py` and run:
+
+```bash
+python run_train.py
+```
+
+### Multi-seed experiment (variance estimation)
+
+```bash
+# After tokenizing once, train with seeds 42, 43, 44
+for SEED in 42 43 44; do
+    python model_src/train.py \
+        --data-dir tokenization_outputs/ver1 \
+        --output-dir experiment_outputs/baseline_seed${SEED} \
+        --seed ${SEED}
+done
+# Average test_metrics.json across seeds for mean ± std AUROC
+```
+
+Or define all seeds in the `RUNS` list in `run_train.py`.
