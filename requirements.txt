@@ -22,6 +22,7 @@ rich==14.2.0
 ipykernel==7.2.0
 pyarrow
 fastparquet
+rich
 
 # Uncomment if needed for waveform / audio processing:
 # wfdb==4.3.1
