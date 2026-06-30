@@ -85,9 +85,10 @@ def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.devic
         position_ids = batch["position_ids"].to(device)
         age_ids      = batch["age_ids"].to(device)
         labels       = batch["label"].to(device)
-        dates        = batch["dates"].to(device) if "dates" in batch else None
+        dates        = batch["dates"].to(device)     if "dates"     in batch else None
+        age_years    = batch["age_years"].to(device) if "age_years" in batch else None
 
-        logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates)
+        logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates, age_years)
         loss   = criterion(logits, labels)
 
         total_loss += loss.item() * len(labels)
@@ -141,15 +142,16 @@ def train(args: argparse.Namespace | object) -> None:
     print(f"Max visit id : {max_num_visits - 1}  →  visit embedding size {max_num_visits}")
     del visit_ids_all
 
-    train_dl, val_dl, _ = get_dataloaders(
+    train_dl, val_dl, test_dl = get_dataloaders(
         data_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         seed=args.seed,
     )
-    print(f"Train batches: {len(train_dl)}  |  Val batches: {len(val_dl)}")
+    print(f"Train batches: {len(train_dl)}  |  Val batches: {len(val_dl)}  |  Test batches: {len(test_dl)}")
 
-    use_time_embedding = getattr(args, "use_time_embedding", False)
+    use_time_embedding   = getattr(args, "use_time_embedding",   False)
+    use_concat_embedding = getattr(args, "use_concat_embedding", False)
     model = EHR_Encoder(
         num_concepts=num_concepts,
         max_num_visits=max_num_visits,
@@ -160,6 +162,7 @@ def train(args: argparse.Namespace | object) -> None:
         dropout=args.dropout,
         max_seq_len=max_seq_len,
         use_time_embedding=use_time_embedding,
+        use_concat_embedding=use_concat_embedding,
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -220,11 +223,12 @@ def train(args: argparse.Namespace | object) -> None:
             position_ids = batch["position_ids"].to(device)
             age_ids      = batch["age_ids"].to(device)
             labels       = batch["label"].to(device)
-            dates        = batch["dates"].to(device) if "dates" in batch else None
+            dates        = batch["dates"].to(device)     if "dates"     in batch else None
+            age_years    = batch["age_years"].to(device) if "age_years" in batch else None
 
             optimizer.zero_grad()
             with autocast("cuda", enabled=device.type == "cuda"):
-                logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates)
+                logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates, age_years)
                 loss   = criterion(logits, labels)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -272,6 +276,15 @@ def train(args: argparse.Namespace | object) -> None:
     with open(output_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
 
+    # Evaluate best checkpoint on held-out test set
+    model.load_state_dict(torch.load(output_dir / "best_model.pt", weights_only=True))
+    test_metrics = evaluate(model, test_dl, criterion, device)
+    print(f"Test  AUROC  {test_metrics['auroc']:.4f}  |  loss {test_metrics['loss']:.4f}")
+    with open(output_dir / "test_metrics.json", "w") as f:
+        json.dump(test_metrics, f, indent=2)
+    if args.use_wandb:
+        wandb.log({"test/auroc": test_metrics["auroc"], "test/loss": test_metrics["loss"]})
+
     if args.use_wandb:
         artifact = wandb.Artifact("best_model", type="model")
         artifact.add_file(str(output_dir / "best_model.pt"))
@@ -308,8 +321,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--wandb-project",      default="mimic-cardio-oncology", dest="wandb_project")
     p.add_argument("--run-name",           default=None, dest="run_name",
                    help="W&B run name (defaults to auto-generated).")
-    p.add_argument("--use-time-embedding", action="store_true", dest="use_time_embedding",
-                   help="Add CEHR-BERT sinusoidal time embedding (requires dates.pt from tokenizer).")
+    p.add_argument("--use-time-embedding",   action="store_true", dest="use_time_embedding",
+                   help="Additive CEHR-BERT sinusoidal time embedding (requires dates.pt).")
+    p.add_argument("--use-concat-embedding", action="store_true", dest="use_concat_embedding",
+                   help="CEHR-BERT concat→FC→GELU combination (requires dates.pt + age_years.pt).")
     return p.parse_args()
 
 
