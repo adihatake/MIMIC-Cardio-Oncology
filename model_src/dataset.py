@@ -40,13 +40,17 @@ class CycleDataset(Dataset):
         self.position_ids = torch.load(data_dir / "position_ids.pt", weights_only=True)
         self.age_ids      = torch.load(data_dir / "age_ids.pt",      weights_only=True)
         self.labels       = torch.load(data_dir / "labels.pt",       weights_only=True)
+        # dates.pt is produced by the updated tokenizer (CEHR-BERT time embedding).
+        # Absent for tokenizations built before this change; model falls back gracefully.
+        dates_path = data_dir / "dates.pt"
+        self.dates = torch.load(dates_path, weights_only=True) if dates_path.exists() else None
 
     def __len__(self) -> int:
         return len(self.indices)
 
     def __getitem__(self, i: int) -> dict[str, torch.Tensor]:
         idx = self.indices[i]
-        return {
+        item = {
             "concept_ids":  self.concept_ids[idx],
             "type_ids":     self.type_ids[idx],
             "visit_ids":    self.visit_ids[idx],
@@ -54,6 +58,9 @@ class CycleDataset(Dataset):
             "age_ids":      self.age_ids[idx],
             "label":        self.labels[idx],
         }
+        if self.dates is not None:
+            item["dates"] = self.dates[idx]
+        return item
 
 
 def _stratified_split(

@@ -85,8 +85,9 @@ def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.devic
         position_ids = batch["position_ids"].to(device)
         age_ids      = batch["age_ids"].to(device)
         labels       = batch["label"].to(device)
+        dates        = batch["dates"].to(device) if "dates" in batch else None
 
-        logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids)
+        logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates)
         loss   = criterion(logits, labels)
 
         total_loss += loss.item() * len(labels)
@@ -148,6 +149,7 @@ def train(args: argparse.Namespace | object) -> None:
     )
     print(f"Train batches: {len(train_dl)}  |  Val batches: {len(val_dl)}")
 
+    use_time_embedding = getattr(args, "use_time_embedding", False)
     model = EHR_Encoder(
         num_concepts=num_concepts,
         max_num_visits=max_num_visits,
@@ -157,6 +159,7 @@ def train(args: argparse.Namespace | object) -> None:
         ff_dim=args.ff_dim,
         dropout=args.dropout,
         max_seq_len=max_seq_len,
+        use_time_embedding=use_time_embedding,
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -217,10 +220,11 @@ def train(args: argparse.Namespace | object) -> None:
             position_ids = batch["position_ids"].to(device)
             age_ids      = batch["age_ids"].to(device)
             labels       = batch["label"].to(device)
+            dates        = batch["dates"].to(device) if "dates" in batch else None
 
             optimizer.zero_grad()
             with autocast("cuda", enabled=device.type == "cuda"):
-                logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids)
+                logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates)
                 loss   = criterion(logits, labels)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -299,11 +303,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device",       default="auto",
                    help="'auto', 'cpu', 'cuda', or 'mps'.")
     p.add_argument("--seed",          type=int,   default=42)
-    p.add_argument("--use-wandb",     action="store_true", dest="use_wandb",
+    p.add_argument("--use-wandb",          action="store_true", dest="use_wandb",
                    help="Enable Weights & Biases logging.")
-    p.add_argument("--wandb-project", default="mimic-cardio-oncology", dest="wandb_project")
-    p.add_argument("--run-name",      default=None, dest="run_name",
+    p.add_argument("--wandb-project",      default="mimic-cardio-oncology", dest="wandb_project")
+    p.add_argument("--run-name",           default=None, dest="run_name",
                    help="W&B run name (defaults to auto-generated).")
+    p.add_argument("--use-time-embedding", action="store_true", dest="use_time_embedding",
+                   help="Add CEHR-BERT sinusoidal time embedding (requires dates.pt from tokenizer).")
     return p.parse_args()
 
 

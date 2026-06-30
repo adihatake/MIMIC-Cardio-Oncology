@@ -7,6 +7,20 @@ Single run:
     python run_train.py
 
 Multiple runs (grid search, ablations) are defined in the RUNS list below.
+
+─── Time-embedding ablation ────────────────────────────────────────────────────
+CEHR-BERT uses two mechanisms for temporal information:
+  1. TimeEmbeddingLayer: sin((days_since_2000 / 365.25) × w + φ) where w, φ are
+     learned — added to the token embedding sum at each position.
+  2. Artificial Time Tokens (ATT): discrete vocabulary tokens (W0–W3, M1–M11, LT)
+     inserted between consecutive visits during tokenization.
+
+To run the ablation:
+  Step 1 — Regenerate tokenization with dates.pt (required for time embedding):
+      python run_tokenization.py   # or tokenize_cli.py with your data-dir
+
+  Step 2 — Run both configs below.  The two output_dirs give side-by-side results.
+────────────────────────────────────────────────────────────────────────────────
 """
 
 from pathlib import Path
@@ -14,43 +28,44 @@ from pathlib import Path
 from configs import TrainConfig
 import model_src.train as train_module
 
+# ── shared hyperparameters ────────────────────────────────────────────────────
+_BASE = dict(
+    data_dir    = Path("tokenization_outputs/ver1"),
+    epochs      = 1,
+    batch_size  = 8,
+    lr          = 1e-4,
+    d_model     = 768,
+    num_heads   = 12,
+    num_layers  = 12,
+    ff_dim      = 3072,
+    dropout     = 0.1,
+    device      = "auto",
+    seed        = 42,
+    num_workers = 6,
+    use_wandb   = False,
+    wandb_project = "mimic-cardio-oncology",
+)
+
 # ── define runs ───────────────────────────────────────────────────────────────
-# Add as many configs as you want. Each gets its own output_dir.
 
 RUNS = [
+    # ── Baseline: no time embedding (sequential position only) ────────────────
     TrainConfig(
-        data_dir   = Path("tokenization_outputs/ver1"),
-        output_dir = Path("experiment_outputs/test1"),
-        epochs     = 1,
-        batch_size = 8,
-        lr         = 1e-4,
-
-        d_model    = 768,
-        num_heads  = 12,
-        num_layers = 12,
-        ff_dim     = 3072,
-        dropout    = 0.1,
-
-        device      = "auto",
-        seed        = 42,
-        num_workers = 4,
-
-        # ── W&B tracking ─────────────────────────────────────────────────────
-        use_wandb     = False,              # flip to True to enable tracking
-        wandb_project = "mimic-cardio-oncology",
-        run_name      = None,               # None → W&B auto-generates a name
+        **_BASE,
+        output_dir         = Path("experiment_outputs/ablation_no_time_emb"),
+        use_time_embedding = False,
+        run_name           = "baseline-no-time-emb",
     ),
 
-    # Example: deeper model
-    # TrainConfig(
-    #     data_dir   = Path("tokenization_outputs/ver1"),
-    #     output_dir = Path("model_outputs/run2_deep"),
-    #     d_model    = 256,
-    #     num_layers = 8,
-    #     ff_dim     = 1024,
-    #     use_wandb  = True,
-    #     run_name   = "deep-ablation",
-    # ),
+    # ── CEHR-BERT time embedding ablation ─────────────────────────────────────
+    # Adds sin((days_since_2000 / 365.25) × w + φ) per token.
+    # Requires dates.pt — re-run tokenization first if it is missing.
+    TrainConfig(
+        **_BASE,
+        output_dir         = Path("experiment_outputs/ablation_time_emb"),
+        use_time_embedding = True,
+        run_name           = "cehrbert-time-emb",
+    ),
 ]
 
 # ── run ───────────────────────────────────────────────────────────────────────

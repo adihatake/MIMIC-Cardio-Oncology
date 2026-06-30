@@ -34,6 +34,12 @@ class TrainConfig:
     wandb_project: str        = "mimic-cardio-oncology"
     run_name:      str | None = None   # defaults to wandb auto-generated name
 
+    # ── ablations ─────────────────────────────────────────────────────────────
+    # CEHR-BERT sinusoidal time embedding: sin((days_since_2000 / 365.25) * w + φ)
+    # where w and φ are learned per embedding dimension.
+    # Requires dates.pt in data_dir — re-run tokenization to generate it.
+    use_time_embedding: bool = False
+
     # ── serialization ─────────────────────────────────────────────────────────
     def to_dict(self) -> dict:
         d = asdict(self)
