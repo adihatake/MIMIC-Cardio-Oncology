@@ -35,10 +35,15 @@ class TrainConfig:
     run_name:      str | None = None   # defaults to wandb auto-generated name
 
     # ── ablations ─────────────────────────────────────────────────────────────
-    # CEHR-BERT sinusoidal time embedding: sin((days_since_2000 / 365.25) * w + φ)
-    # where w and φ are learned per embedding dimension.
-    # Requires dates.pt in data_dir — re-run tokenization to generate it.
+    # Additive sinusoidal time embedding (CEHR-BERT): sin((days/365.25)*w + φ).
+    # Requires dates.pt — re-run tokenization to generate it.
     use_time_embedding: bool = False
+
+    # Concat→FC→GELU combination (CEHR-BERT / EHRMamba style).
+    # Concatenates [concept, time, age_sinusoidal, position] → Linear(4d→d) → GELU,
+    # then adds type + visit + segment residuals.
+    # Requires both dates.pt and age_years.pt — re-run tokenization to generate them.
+    use_concat_embedding: bool = False
 
     # ── serialization ─────────────────────────────────────────────────────────
     def to_dict(self) -> dict:

@@ -4,19 +4,22 @@ evaluate_model.py
 Evaluate a trained EHR_Encoder checkpoint on a data split and report
 aggregate metrics plus a per-sample result table.
 
+The split is reconstructed from the seed stored in the model's config.json,
+so it exactly matches the split used during training — no splits.json needed.
+
 Usage:
     # Evaluate on test split (default)
-    python evaluation/evaluate_model.py --model-dir experiment_outputs/test1
+    python evaluation/evaluate_model.py --model-dir experiment_outputs/run1
 
     # Evaluate on val split
-    python evaluation/evaluate_model.py --model-dir experiment_outputs/test1 --split val
+    python evaluation/evaluate_model.py --model-dir experiment_outputs/run1 --split val
 
     # Save per-sample CSV
-    python evaluation/evaluate_model.py --model-dir experiment_outputs/test1 \\
-        --output-csv experiment_outputs/test1/test_results.csv
+    python evaluation/evaluate_model.py --model-dir experiment_outputs/run1 \\
+        --output-csv experiment_outputs/run1/test_results.csv
 
     # Smaller batch size to save memory
-    python evaluation/evaluate_model.py --model-dir experiment_outputs/test1 --batch-size 16
+    python evaluation/evaluate_model.py --model-dir experiment_outputs/run1 --batch-size 16
 """
 
 from __future__ import annotations
@@ -29,19 +32,18 @@ from pathlib import Path
 
 import torch
 import torch.nn.functional as F
-import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
+from model_src.dataset import _compute_row_indices
 from model_src.ehr_encoder import EHR_Encoder
 
 
 # ── data helpers ──────────────────────────────────────────────────────────────
 
-def _load_data(data_dir: Path):
-    with open(data_dir / "splits.json") as f:
-        splits = json.load(f)
+def _load_data(data_dir: Path, seed: int):
+    row_indices = _compute_row_indices(data_dir, seed)
 
     samples_meta = []
     with open(data_dir / "samples.csv") as f:
@@ -60,7 +62,14 @@ def _load_data(data_dir: Path):
         "age_ids":      torch.load(data_dir / "age_ids.pt",      weights_only=True),
         "labels":       torch.load(data_dir / "labels.pt",       weights_only=True),
     }
-    return splits["row_indices"], samples_meta, tensors
+    dates_path     = data_dir / "dates.pt"
+    age_years_path = data_dir / "age_years.pt"
+    if dates_path.exists():
+        tensors["dates"]     = torch.load(dates_path,     weights_only=True)
+    if age_years_path.exists():
+        tensors["age_years"] = torch.load(age_years_path, weights_only=True)
+
+    return row_indices, samples_meta, tensors
 
 
 def _load_model(model_dir: Path, device: torch.device) -> tuple[EHR_Encoder, dict]:
@@ -68,14 +77,16 @@ def _load_model(model_dir: Path, device: torch.device) -> tuple[EHR_Encoder, dic
         cfg = json.load(f)
 
     model = EHR_Encoder(
-        num_concepts   = cfg["num_concepts"],
-        max_num_visits = cfg["max_num_visits"],
-        d_model        = cfg["d_model"],
-        num_heads      = cfg["num_heads"],
-        num_layers     = cfg["num_layers"],
-        ff_dim         = cfg["ff_dim"],
-        dropout        = cfg.get("dropout", 0.1),
-        max_seq_len    = cfg["max_seq_len"],
+        num_concepts         = cfg["num_concepts"],
+        max_num_visits       = cfg["max_num_visits"],
+        d_model              = cfg["d_model"],
+        num_heads            = cfg["num_heads"],
+        num_layers           = cfg["num_layers"],
+        ff_dim               = cfg["ff_dim"],
+        dropout              = cfg.get("dropout", 0.1),
+        max_seq_len          = cfg["max_seq_len"],
+        use_time_embedding   = cfg.get("use_time_embedding",   False),
+        use_concat_embedding = cfg.get("use_concat_embedding", False),
     ).to(device)
 
     ckpt = model_dir / "best_model.pt"
@@ -104,8 +115,10 @@ def _run_inference(
         position_ids = tensors["position_ids"][rows].to(device)
         age_ids      = tensors["age_ids"][rows].to(device)
         labels       = tensors["labels"][rows]
+        dates        = tensors["dates"][rows].to(device)     if "dates"     in tensors else None
+        age_years    = tensors["age_years"][rows].to(device) if "age_years" in tensors else None
 
-        logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids)
+        logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates, age_years)
         probs  = F.softmax(logits, dim=-1)[:, 1].cpu().tolist()
 
         all_probs.extend(probs)
@@ -132,14 +145,14 @@ def _compute_metrics(labels: list[int], probs: list[float], threshold: float = 0
     cm = confusion_matrix(labels, preds)
 
     return {
-        "auroc":     auroc,
-        "accuracy":  accuracy,
-        "precision": prec,
-        "recall":    rec,
-        "f1":        f1,
-        "cm":        cm.tolist(),
-        "threshold": threshold,
-        "n_samples": len(labels),
+        "auroc":      auroc,
+        "accuracy":   accuracy,
+        "precision":  prec,
+        "recall":     rec,
+        "f1":         f1,
+        "cm":         cm.tolist(),
+        "threshold":  threshold,
+        "n_samples":  len(labels),
         "n_positive": sum(labels),
         "n_negative": len(labels) - sum(labels),
     }
@@ -148,14 +161,14 @@ def _compute_metrics(labels: list[int], probs: list[float], threshold: float = 0
 # ── display ───────────────────────────────────────────────────────────────────
 
 def _display_results(
-    metrics:     dict,
-    split:       str,
-    row_indices: list[int],
+    metrics:      dict,
+    split:        str,
+    row_indices:  list[int],
     samples_meta: list[dict],
-    labels:      list[int],
-    probs:       list[float],
-    model_dir:   Path,
-    max_rows:    int,
+    labels:       list[int],
+    probs:        list[float],
+    model_dir:    Path,
+    max_rows:     int,
 ) -> None:
     from rich.console import Console
     from rich.table import Table
@@ -164,7 +177,6 @@ def _display_results(
 
     console = Console()
 
-    # ── metrics panel ─────────────────────────────────────────────────────────
     cm     = metrics["cm"]
     tn, fp = cm[0][0], cm[0][1]
     fn, tp = cm[1][0], cm[1][1]
@@ -186,7 +198,6 @@ def _display_results(
     )
     console.print(Panel(summary, title="[bold blue]Evaluation Results[/]", expand=False))
 
-    # ── per-sample table ──────────────────────────────────────────────────────
     threshold = metrics["threshold"]
     preds     = [1 if p >= threshold else 0 for p in probs]
 
@@ -241,13 +252,13 @@ def _display_results(
 # ── CSV export ────────────────────────────────────────────────────────────────
 
 def _save_csv(
-    output_path: Path,
-    split:       str,
-    row_indices: list[int],
+    output_path:  Path,
+    split:        str,
+    row_indices:  list[int],
     samples_meta: list[dict],
-    labels:      list[int],
-    probs:       list[float],
-    threshold:   float,
+    labels:       list[int],
+    probs:        list[float],
+    threshold:    float,
 ) -> None:
     preds = [1 if p >= threshold else 0 for p in probs]
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -333,9 +344,10 @@ def main() -> None:
         sys.exit(1)
     data_dir = Path(data_dir_str)
 
-    row_indices_all, samples_meta, tensors = _load_data(data_dir)
+    seed = cfg.get("seed", 42)
+    row_indices_all, samples_meta, tensors = _load_data(data_dir, seed)
     split_rows = row_indices_all[args.split]
-    print(f"Running on {args.split} split ({len(split_rows)} samples) …")
+    print(f"Running on {args.split} split (seed={seed}, {len(split_rows)} samples) …")
 
     probs, labels = _run_inference(model, tensors, split_rows, device, args.batch_size)
     metrics       = _compute_metrics(labels, probs, threshold=args.threshold)

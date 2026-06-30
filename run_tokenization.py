@@ -21,7 +21,7 @@ cfg = TokenizationConfig(
     cohort_name   = "cycle_modeling_v3",
     output_name   = "Jun26_1000",
     max_seq_len   = 1000,
-    run_split     = True,
+    run_split     = False,
     run_summarize = True,
 )
 
@@ -34,10 +34,12 @@ if __name__ == "__main__":
 
     print("── tokenize ────────────────────────────────────────────────────────")
     tok_module.main(
-        data_dir    = cfg.data_dir,
-        cohort_name = cfg.cohort_name,
-        output_name = cfg.output_name,
-        max_seq_len = cfg.max_seq_len,
+        data_dir                = cfg.data_dir,
+        cohort_name             = cfg.cohort_name,
+        output_name             = cfg.output_name,
+        max_seq_len             = cfg.max_seq_len,
+        insert_att              = cfg.insert_att,
+        insert_visit_delimiters = cfg.insert_visit_delimiters,
     )
 
     if cfg.run_split:
