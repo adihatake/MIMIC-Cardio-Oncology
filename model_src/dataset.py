@@ -40,10 +40,11 @@ class CycleDataset(Dataset):
         self.position_ids = torch.load(data_dir / "position_ids.pt", weights_only=True)
         self.age_ids      = torch.load(data_dir / "age_ids.pt",      weights_only=True)
         self.labels       = torch.load(data_dir / "labels.pt",       weights_only=True)
-        # dates.pt is produced by the updated tokenizer (CEHR-BERT time embedding).
-        # Absent for tokenizations built before this change; model falls back gracefully.
-        dates_path = data_dir / "dates.pt"
-        self.dates = torch.load(dates_path, weights_only=True) if dates_path.exists() else None
+        # Optional files produced by the updated tokenizer — absent for old tokenizations.
+        dates_path     = data_dir / "dates.pt"
+        age_years_path = data_dir / "age_years.pt"
+        self.dates     = torch.load(dates_path,     weights_only=True) if dates_path.exists()     else None
+        self.age_years = torch.load(age_years_path, weights_only=True) if age_years_path.exists() else None
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -60,6 +61,8 @@ class CycleDataset(Dataset):
         }
         if self.dates is not None:
             item["dates"] = self.dates[idx]
+        if self.age_years is not None:
+            item["age_years"] = self.age_years[idx]
         return item
 
 

@@ -49,94 +49,70 @@ class EHR_Event_Embedding(nn.Module):
     """
     Multi-level embedding for EHR event sequences.
 
-    Sums six learned embeddings per token — concept, event type, visit,
-    segment, position, and age — following the BERT-style approach used in
-    clinical NLP models such as BEHRT and Med-BERT.
+    Two combination modes are supported (selected by use_concat_embedding):
 
-    Segment embedding alternates between 0 and 1 across consecutive hospital
-    admissions (visit_ids % 2), analogous to BERT's sentence A/B tokens.
-    This lets the model distinguish between even and odd admissions without
-    consuming extra capacity in the visit embedding.
+    Additive mode (default, BEHRT-style):
+        sum(concept, type, visit, segment, position, age_bucket)
+        + optional CEHR-BERT sinusoidal time embedding
 
-    Age is a patient-level attribute (one decade bucket per patient) that is
-    broadcast across every token in the sequence so every attention head can
-    reference it alongside per-token signals.
+    Concat mode (CEHR-BERT / EHRMamba style):
+        Linear( cat([concept, time, age_sinusoidal, position], dim=-1) ) → GELU
+        + type + visit + segment  (additive residuals, same as CEHR-BERT)
 
     Args:
-        num_concepts:       Vocabulary size (number of unique clinical concepts).
-        num_visits:         Visit embedding table size. Defaults to 50, which
-                            safely covers the vast majority of MIMIC patients.
-                            Visit IDs are re-indexed to 1..K per sequence window
-                            in the tokenizer, so this is an upper bound on K.
-        num_event_types:    Number of event type categories (default 5:
-                            special, diagnosis, procedure, lab, medication).
-        num_age_buckets:    Number of age decade buckets (default 10: 0 to 9,
-                            10 to 19, …, 90+).  Computed by the tokenizer.
-        d_token_embedding:  Embedding dimension for all sub-embeddings.
-        max_seq_len:        Position embedding table size; must match the
-                            max_seq_len used in tokenize_ehr_dataset.
-        padding_idx:        Concept index that receives a zero embedding and
-                            zero gradient. Should be concept_vocab["[PAD]"] = 0.
+        num_concepts:          Vocabulary size.
+        max_num_visits:        Visit embedding table size.
+        num_event_types:       Event type categories (default 5).
+        num_age_buckets:       Decade buckets for additive mode (default 10).
+        d_token_embedding:     Embedding dimension for all sub-embeddings.
+        max_seq_len:           Position table size; must match tokenisation.
+        padding_idx:           Concept index with zero embedding/gradient.
+        use_time_embedding:    Additive sinusoidal time embedding (additive mode only).
+        time_scaling_factor:   Divisor for dates before sin(); default 365.25 (days→years).
+        use_concat_embedding:  Switch to concat→FC→GELU combination (CEHR-BERT style).
+                               Requires dates and age_years tensors at forward time.
     """
 
     def __init__(
             self,
-            num_concepts: int = 20000,
-            max_num_visits: int = 50,
-            num_event_types: int = 5,
-            num_age_buckets: int = 10,
-            d_token_embedding: int = 128,
-            max_seq_len: int = 600,
-            padding_idx: int = 0,
-            use_time_embedding: bool = False,
-            time_scaling_factor: float = 365.25,
+            num_concepts:         int   = 20000,
+            max_num_visits:       int   = 50,
+            num_event_types:      int   = 5,
+            num_age_buckets:      int   = 10,
+            d_token_embedding:    int   = 128,
+            max_seq_len:          int   = 600,
+            padding_idx:          int   = 0,
+            use_time_embedding:   bool  = False,
+            time_scaling_factor:  float = 365.25,
+            use_concat_embedding: bool  = False,
             ) -> None:
 
         super().__init__()
-        self.use_time_embedding = use_time_embedding
+        self.use_time_embedding   = use_time_embedding
+        self.use_concat_embedding = use_concat_embedding
+        d = d_token_embedding
 
-        self.concept_embedding = nn.Embedding(
-            num_embeddings=num_concepts,
-            embedding_dim=d_token_embedding,
-            padding_idx=padding_idx,
-        )
+        # ── shared tables (used in both modes) ───────────────────────────────
+        self.concept_embedding = nn.Embedding(num_concepts, d, padding_idx=padding_idx)
+        self.type_embedding    = nn.Embedding(num_event_types, d)
+        self.visit_embedding   = nn.Embedding(max_num_visits,  d)
+        self.position_embedding = nn.Embedding(max_seq_len,    d)
+        self.segment_embedding  = nn.Embedding(2,              d)
 
-        self.type_embedding = nn.Embedding(
-            num_embeddings=num_event_types,
-            embedding_dim=d_token_embedding,
-        )
+        # ── additive-mode age (decade buckets, BEHRT-style) ──────────────────
+        self.age_embedding = nn.Embedding(num_age_buckets, d)
 
-        self.visit_embedding = nn.Embedding(
-            num_embeddings=max_num_visits,
-            embedding_dim=d_token_embedding,
-        )
+        # ── sinusoidal layers (always created; used selectively) ─────────────
+        # time:  per-token absolute date  → (batch, seq, d)
+        # age:   per-patient age in years → broadcast (batch, 1, d)
+        self.time_embedding  = TimeEmbeddingLayer(d, scaling_factor=time_scaling_factor)
+        self.age_sinusoidal  = TimeEmbeddingLayer(d, scaling_factor=1.0)
 
-        self.position_embedding = nn.Embedding(
-            num_embeddings=max_seq_len,
-            embedding_dim=d_token_embedding,
-        )
+        # ── concat-mode projection ────────────────────────────────────────────
+        # cat([concept(d), time(d), age(d), pos(d)]) → Linear(4d→d) → GELU
+        self.proj = nn.Linear(4 * d, d)
 
-        self.age_embedding = nn.Embedding(
-            num_embeddings=num_age_buckets,
-            embedding_dim=d_token_embedding,
-        )
-
-        # 2-way segment embedding: visit_ids % 2 alternates 0/1 across admissions.
-        # CLS and padding both have visit_id=0 and receive segment 0.
-        self.segment_embedding = nn.Embedding(
-            num_embeddings=2,
-            embedding_dim=d_token_embedding,
-        )
-
-        # CEHR-BERT TimeEmbeddingLayer: sin((dates / scaling_factor) * w + φ)
-        # Created unconditionally so state_dicts stay consistent across ablations;
-        # only applied in forward when use_time_embedding=True.
-        self.time_embedding = TimeEmbeddingLayer(
-            embedding_size=d_token_embedding,
-            scaling_factor=time_scaling_factor,
-        )
-
-        self.layer_norm = nn.LayerNorm(d_token_embedding)
+        self.layer_norm = nn.LayerNorm(d)
         self.dropout    = nn.Dropout(0.1)
 
     def forward(
@@ -147,47 +123,75 @@ class EHR_Event_Embedding(nn.Module):
         position_ids: torch.Tensor,
         age_ids:      torch.Tensor,
         dates:        torch.Tensor | None = None,
+        age_years:    torch.Tensor | None = None,
     ) -> torch.Tensor:
         """
         Args:
-            concept_ids:  (batch_size, seq_len) — clinical concept indices
-            type_ids:     (batch_size, seq_len) — event type indices
-            visit_ids:    (batch_size, seq_len) — visit indices
-            position_ids: (batch_size, seq_len) — position indices 0..seq_len-1
-            age_ids:      (batch_size,)          — decade bucket per patient
-            dates:        (batch_size, seq_len) — days since TIME_REFERENCE_DATE;
-                          required when use_time_embedding=True
-
+            concept_ids:  (B, S) long
+            type_ids:     (B, S) long
+            visit_ids:    (B, S) long
+            position_ids: (B, S) long
+            age_ids:      (B,)   long  — decade bucket; used in additive mode
+            dates:        (B, S) long  — days since TIME_REFERENCE_DATE;
+                          required for use_time_embedding=True or use_concat_embedding=True
+            age_years:    (B,)   float — continuous age in years;
+                          required for use_concat_embedding=True
         Returns:
-            (batch_size, seq_len, d_token_embedding)
+            (B, S, d_token_embedding)
         """
-        # age_ids is (batch,); unsqueeze to (batch, 1, d_model) for broadcasting
-        age_emb = self.age_embedding(age_ids).unsqueeze(1)
-
-        # Segment alternates 0 and 1 per admission:
-        # CLS/padding (visit_id=0) → 0,
-        # admission 1 → 1,
-        # admission 2 → 0, ...
         segment_ids = visit_ids % 2
 
-        embedding: torch.Tensor = (
-            self.concept_embedding(concept_ids)
-            + self.type_embedding(type_ids)
-            + self.visit_embedding(visit_ids)
-            + self.segment_embedding(segment_ids)
-            + self.position_embedding(position_ids)
-            + age_emb
-        )
-
-        if self.use_time_embedding:
+        if self.use_concat_embedding:
             if dates is None:
                 raise ValueError(
-                    "use_time_embedding=True but dates tensor was not provided. "
-                    "Re-run tokenization to generate dates.pt, then pass dates in the batch."
+                    "use_concat_embedding=True requires dates. "
+                    "Re-run tokenization to generate dates.pt."
                 )
-            embedding = embedding + self.time_embedding(dates)
+            if age_years is None:
+                raise ValueError(
+                    "use_concat_embedding=True requires age_years. "
+                    "Re-run tokenization to generate age_years.pt."
+                )
+            # age_years: (B,) → (B, 1) so TimeEmbeddingLayer gives (B, 1, d)
+            age_emb = self.age_sinusoidal(age_years.unsqueeze(1))  # (B, 1, d)
+            age_emb = age_emb.expand(-1, concept_ids.size(1), -1)  # (B, S, d)
+
+            # CEHR-BERT / EHRMamba: concat the four temporal components, project
+            fused = torch.cat([
+                self.concept_embedding(concept_ids),   # (B, S, d)
+                self.time_embedding(dates),            # (B, S, d)
+                age_emb,                               # (B, S, d)
+                self.position_embedding(position_ids), # (B, S, d)
+            ], dim=-1)                                 # (B, S, 4d)
+            embedding = torch.nn.functional.gelu(self.proj(fused))  # (B, S, d)
+
+            # Residual discrete embeddings added after projection (CEHR-BERT style)
+            embedding = (
+                embedding
+                + self.type_embedding(type_ids)
+                + self.visit_embedding(visit_ids)
+                + self.segment_embedding(segment_ids)
+            )
+
+        else:
+            # Additive mode: sum all embeddings (BEHRT-style)
+            age_emb = self.age_embedding(age_ids).unsqueeze(1)  # (B, 1, d) → broadcast
+            embedding = (
+                self.concept_embedding(concept_ids)
+                + self.type_embedding(type_ids)
+                + self.visit_embedding(visit_ids)
+                + self.segment_embedding(segment_ids)
+                + self.position_embedding(position_ids)
+                + age_emb
+            )
+            if self.use_time_embedding:
+                if dates is None:
+                    raise ValueError(
+                        "use_time_embedding=True requires dates. "
+                        "Re-run tokenization to generate dates.pt."
+                    )
+                embedding = embedding + self.time_embedding(dates)
 
         embedding = self.layer_norm(embedding)
         embedding = self.dropout(embedding)
-
         return embedding

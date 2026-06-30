@@ -92,17 +92,18 @@ class EHR_Encoder(nn.Module):
 
     def __init__(
         self,
-        num_concepts:        int,
-        max_num_visits:      int   = 512,
-        d_model:             int   = 128,
-        num_heads:           int   = 4,
-        num_layers:          int   = 4,
-        ff_dim:              int   = 512,
-        dropout:             float = 0.1,
-        max_seq_len:         int   = 600,
-        num_classes:         int   = 2,
-        use_time_embedding:  bool  = False,
-        time_scaling_factor: float = 365.25,
+        num_concepts:         int,
+        max_num_visits:       int   = 512,
+        d_model:              int   = 128,
+        num_heads:            int   = 4,
+        num_layers:           int   = 4,
+        ff_dim:               int   = 512,
+        dropout:              float = 0.1,
+        max_seq_len:          int   = 600,
+        num_classes:          int   = 2,
+        use_time_embedding:   bool  = False,
+        time_scaling_factor:  float = 365.25,
+        use_concat_embedding: bool  = False,
     ) -> None:
         super().__init__()
 
@@ -113,6 +114,7 @@ class EHR_Encoder(nn.Module):
             max_seq_len=max_seq_len,
             use_time_embedding=use_time_embedding,
             time_scaling_factor=time_scaling_factor,
+            use_concat_embedding=use_concat_embedding,
         )
 
         self.layers = nn.ModuleList([
@@ -130,10 +132,12 @@ class EHR_Encoder(nn.Module):
         position_ids: torch.Tensor,
         age_ids:      torch.Tensor,
         dates:        torch.Tensor | None = None,
+        age_years:    torch.Tensor | None = None,
     ) -> torch.Tensor:
-        # age_ids: (batch,) — broadcast across seq_len inside EHR_Event_Embedding
-        # dates:   (batch, seq_len) — only used when use_time_embedding=True
-        x = self.embedding(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates)
+        x = self.embedding(
+            concept_ids, type_ids, visit_ids, position_ids,
+            age_ids, dates, age_years,
+        )
 
         padding_mask = (concept_ids != 0).long()
 
@@ -146,19 +150,23 @@ class EHR_Encoder(nn.Module):
 # Smoke test using random tensors
 if __name__ == "__main__":
     B, S, V = 2, 64, 500
-    # baseline (no time embedding)
-    model = EHR_Encoder(num_concepts=V, use_time_embedding=False)
     concept_ids  = torch.randint(0, V,  (B, S))
     type_ids     = torch.randint(0, 5,  (B, S))
     visit_ids    = torch.randint(0, 10, (B, S))
     position_ids = torch.arange(S).unsqueeze(0).expand(B, -1)
     age_ids      = torch.randint(0, 10, (B,))
-    logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids)
-    print(f"logits shape (no time emb): {logits.shape}")  # (2, 2)
+    dates        = torch.randint(0, 9000, (B, S))
+    age_years    = torch.FloatTensor([62.0, 47.5])
 
-    # CEHR-BERT time embedding ablation
-    model_t = EHR_Encoder(num_concepts=V, use_time_embedding=True)
-    dates   = torch.randint(0, 9000, (B, S))  # days since 2000-01-01
-    logits_t = model_t(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates)
-    print(f"logits shape (time emb):    {logits_t.shape}")  # (2, 2)
+    # 1. baseline
+    m1 = EHR_Encoder(num_concepts=V)
+    print("baseline:", m1(concept_ids, type_ids, visit_ids, position_ids, age_ids).shape)
+
+    # 2. additive time embedding
+    m2 = EHR_Encoder(num_concepts=V, use_time_embedding=True)
+    print("+ time emb:", m2(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates).shape)
+
+    # 3. concat embedding (CEHR-BERT style)
+    m3 = EHR_Encoder(num_concepts=V, use_concat_embedding=True)
+    print("concat emb:", m3(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates, age_years).shape)
     print("ehr_encoder.py OK")
