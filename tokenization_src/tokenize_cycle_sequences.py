@@ -108,6 +108,30 @@ TYPE_VOCAB: dict[str, int] = {
 
 SPECIAL_TOKENS = ["[PAD]", "[UNK]", "[CLS]", "[V_START]", "[V_END]"]
 
+# ── CEHR-BERT time machinery ──────────────────────────────────────────────────
+# Reference epoch for converting absolute event dates to integer day counts.
+# Days since this date are passed to TimeEmbeddingLayer (see embedding_layers.py).
+TIME_REFERENCE_DATE = pd.Timestamp("2000-01-01")
+
+# Artificial Time Token (ATT) thresholds — CEHR-BERT CEHR_BERT mode:
+#   < 28 days  → "W{floor(days/7)}"   (W0 … W3)
+#   28–359 days → "M{floor(days/30)}"  (M1 … M11)
+#   ≥ 360 days → "LT"
+ATT_SPECIAL_TOKENS = (
+    [f"W{i}" for i in range(4)]     # W0-W3  (0–3 weeks)
+    + [f"M{i}" for i in range(1, 12)]  # M1-M11 (1–11 months)
+    + ["LT"]                         # long-term (≥360 days)
+)
+
+
+def _days_to_att(days: int) -> str:
+    """Map days-since-last-visit to an ATT token name (CEHR-BERT CEHR_BERT mode)."""
+    if days < 28:
+        return f"W{days // 7}"
+    if days < 360:
+        return f"M{days // 30}"
+    return "LT"
+
 
 # ── data loading ──────────────────────────────────────────────────────────────
 
@@ -284,8 +308,11 @@ def build_master_events(subject_ids: set[int]) -> tuple[pd.DataFrame, pd.DataFra
 # ── vocabulary ────────────────────────────────────────────────────────────────
 
 def build_concept_vocab(all_tokens: list[str]) -> dict[str, int]:
-    unique = sorted(set(all_tokens) - set(SPECIAL_TOKENS))
-    return {tok: idx for idx, tok in enumerate(SPECIAL_TOKENS + unique)}
+    # ATT tokens are reserved slots right after SPECIAL_TOKENS so their indices
+    # are stable regardless of which clinical concepts appear in a cohort.
+    reserved = SPECIAL_TOKENS + ATT_SPECIAL_TOKENS
+    unique = sorted(set(all_tokens) - set(reserved))
+    return {tok: idx for idx, tok in enumerate(reserved + unique)}
 
 
 # ── tokenization ──────────────────────────────────────────────────────────────
@@ -305,30 +332,76 @@ def tokenize_window(
     patient_events: pd.DataFrame,
     prediction_time: pd.Timestamp,
     concept_vocab: dict[str, int],
+    insert_att: bool = False,
 ) -> dict:
     """
     Build token lists for one (patient, prediction_time) cumulative window.
     Events are filtered to strictly before prediction_time, then truncated to
     the most recent MAX_SEQ_LEN - 1 tokens before prepending [CLS].
+
+    Always computes a `dates` field (days since TIME_REFERENCE_DATE per token)
+    for use by the CEHR-BERT TimeEmbeddingLayer at training time.
+
+    If insert_att=True, inserts CEHR-BERT Artificial Time Tokens (ATT) between
+    consecutive visits based on the inter-visit gap in days.
     """
-    window = patient_events[patient_events["event_time"] < prediction_time]
+    window = patient_events[patient_events["event_time"] < prediction_time].copy()
 
     unk_id = concept_vocab["[UNK]"]
     cls_id = concept_vocab["[CLS]"]
+
+    # Absolute date of each event as integer days since TIME_REFERENCE_DATE.
+    # Used by TimeEmbeddingLayer; clipped to 0 for any pre-reference events.
+    raw_dates = (
+        (window["event_time"] - TIME_REFERENCE_DATE)
+        .dt.days
+        .clip(lower=0)
+        .astype(int)
+        .tolist()
+    )
 
     concept_ids  = window["concept_token"].map(concept_vocab).fillna(unk_id).astype(int).tolist()
     type_ids     = window["event_type"].map(TYPE_VOCAB).fillna(TYPE_VOCAB["special"]).astype(int).tolist()
     visit_ids    = window["visit_id"].fillna(0).astype(int).tolist()
 
+    if insert_att:
+        # Insert an ATT token between consecutive visits whenever visit_id changes.
+        # ATT token carries the date of the visit it precedes.
+        att_concept_ids, att_type_ids, att_visit_ids, att_dates = [], [], [], []
+        prev_visit = None
+        prev_date  = None
+        for cid, tid, vid, date in zip(concept_ids, type_ids, visit_ids, raw_dates):
+            if prev_visit is not None and vid != prev_visit and vid != 0:
+                gap_days = max(0, date - prev_date)
+                att_tok  = _days_to_att(gap_days)
+                att_id   = concept_vocab.get(att_tok, unk_id)
+                att_concept_ids.append(att_id)
+                att_type_ids.append(TYPE_VOCAB["special"])
+                att_visit_ids.append(vid)
+                att_dates.append(date)
+            att_concept_ids.append(cid)
+            att_type_ids.append(tid)
+            att_visit_ids.append(vid)
+            att_dates.append(date)
+            prev_visit = vid
+            prev_date  = date
+        concept_ids = att_concept_ids
+        type_ids    = att_type_ids
+        visit_ids   = att_visit_ids
+        raw_dates   = att_dates
+
     budget = MAX_SEQ_LEN - 1
-    raw_seq_len = len(concept_ids) + 1  # +1 for CLS, before any truncation
+    raw_seq_len = len(concept_ids) + 1  # +1 for CLS, before truncation
     concept_ids = concept_ids[-budget:]
     type_ids    = type_ids[-budget:]
     visit_ids   = visit_ids[-budget:]
+    raw_dates   = raw_dates[-budget:]
 
+    cls_date = max(0, (prediction_time - TIME_REFERENCE_DATE).days)
     concept_ids  = [cls_id] + concept_ids
     type_ids     = [TYPE_VOCAB["special"]] + type_ids
     visit_ids    = [0] + visit_ids
+    dates        = [cls_date] + raw_dates
     position_ids = list(range(len(concept_ids)))
 
     return {
@@ -336,6 +409,7 @@ def tokenize_window(
         "type_ids":     type_ids,
         "visit_ids":    visit_ids,
         "position_ids": position_ids,
+        "dates":        dates,
         "seq_len":      len(concept_ids),
         "raw_seq_len":  raw_seq_len,
     }
@@ -348,6 +422,7 @@ def main(
     cohort_name: str | None = None,
     output_name: str | None = None,
     max_seq_len: int | None = None,
+    insert_att: bool = False,
 ) -> None:
     global MAX_SEQ_LEN, MODELING_DIR, OUTPUT_DIR, DATA_DIR, HOSP_DIR
     DATA_DIR = data_dir
@@ -394,7 +469,7 @@ def main(
         label     = int(row["binary_label"])
 
         events = patient_events_map.get(sid, pd.DataFrame())
-        tok    = tokenize_window(events, pred_time, concept_vocab)
+        tok    = tokenize_window(events, pred_time, concept_vocab, insert_att=insert_att)
         age_id = _compute_age_id(sid, pred_time, patients_df)
 
         samples_meta.append({
@@ -427,6 +502,12 @@ def main(
         [torch.tensor(s["position_ids"], dtype=torch.long) for s in token_sequences],
         batch_first=True, padding_value=0,
     )
+    # dates: days since TIME_REFERENCE_DATE per token, for CEHR-BERT TimeEmbeddingLayer.
+    # Padding positions receive 0 (same as CLS to be benign; masked out in attention anyway).
+    dates_t = pad_sequence(
+        [torch.tensor(s["dates"], dtype=torch.long) for s in token_sequences],
+        batch_first=True, padding_value=0,
+    )
     attention_mask  = concept_ids_t != pad_id
     age_ids_t       = torch.tensor([s["age_id"] for s in token_sequences], dtype=torch.long)
     labels_t        = torch.tensor([s["label"]  for s in token_sequences], dtype=torch.long)
@@ -436,6 +517,7 @@ def main(
     torch.save(type_ids_t,     OUTPUT_DIR / "type_ids.pt")
     torch.save(visit_ids_t,    OUTPUT_DIR / "visit_ids.pt")
     torch.save(position_ids_t, OUTPUT_DIR / "position_ids.pt")
+    torch.save(dates_t,        OUTPUT_DIR / "dates.pt")
     torch.save(attention_mask, OUTPUT_DIR / "attention_mask.pt")
     torch.save(age_ids_t,      OUTPUT_DIR / "age_ids.pt")
     torch.save(labels_t,       OUTPUT_DIR / "labels.pt")
@@ -466,6 +548,10 @@ def main(
         "tensor_shape":         list(concept_ids_t.shape),
         "modeling_dir":         str(MODELING_DIR),
         "data_dir":             str(DATA_DIR),
+        # CEHR-BERT time embedding fields
+        "has_dates":            True,
+        "time_reference_date":  str(TIME_REFERENCE_DATE.date()),
+        "insert_att":           insert_att,
     }
     with open(OUTPUT_DIR / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
@@ -490,5 +576,7 @@ if __name__ == "__main__":
     p.add_argument("--cohort",     default=None,             help="Cohort name under cohort_outputs/")
     p.add_argument("--name",       default=None,             help="Output name under tokenization_outputs/")
     p.add_argument("--max-seq-len",default=None, type=int,   help="Max token sequence length")
+    p.add_argument("--insert-att", action="store_true",      help="Insert CEHR-BERT ATT tokens between visits")
     a = p.parse_args()
-    main(data_dir=a.data_dir, cohort_name=a.cohort, output_name=a.name, max_seq_len=a.max_seq_len)
+    main(data_dir=a.data_dir, cohort_name=a.cohort, output_name=a.name,
+         max_seq_len=a.max_seq_len, insert_att=a.insert_att)
