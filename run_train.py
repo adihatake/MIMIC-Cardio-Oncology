@@ -19,20 +19,18 @@ To estimate variance, repeat each ablation across multiple seeds:
              for s in SEEDS for name, kwargs in ABLATIONS]
 ────────────────────────────────────────────────────────────────────────────────
 
-─── Embedding ablations ────────────────────────────────────────────────────────
-Three ablation dimensions, each independently toggleable:
-
-  use_time_embedding   — additive sinusoidal time per token (CEHR-BERT)
-  use_concat_embedding — concat [concept, time, age_sin, pos] → FC → GELU
-                         + residual type/visit/segment  (CEHR-BERT / EHRMamba)
+─── Embedding modes (embedding_mode) ───────────────────────────────────────────
+  "additive"      BEHRT-style: additive sum of all embedding tables. No time signal.
+  "additive+time" Additive sum + sinusoidal time per token (CEHR-BERT formula).
+                  Requires dates.pt.
+  "concat"        CEHR-BERT / EHRMamba: cat([concept, time, age, position]) →
+                  Linear(4d→d) → GELU, then + type + visit + segment residuals.
+                  Time and continuous age are always active in this mode.
+                  Requires dates.pt and age_years.pt.
 
 Tokenisation flags (set when running run_tokenization.py):
   insert_att               ATT tokens (W0-W3, M1-M11, LT) between visits
   insert_visit_delimiters  [V_START]/[V_END] around each visit block
-
-All model ablations require re-running tokenization to generate:
-  dates.pt      — needed by use_time_embedding and use_concat_embedding
-  age_years.pt  — needed by use_concat_embedding
 ────────────────────────────────────────────────────────────────────────────────
 """
 
@@ -68,32 +66,29 @@ _BASE = dict(
 #            for s in SEEDS]
 
 RUNS = [
-    # 1. Baseline: additive sum, decade-bucket age, sequential position only
+    # 1. Additive — BEHRT-style, no time signal
     TrainConfig(
         **_BASE,
-        output_dir           = Path("experiment_outputs/ablation_baseline"),
-        use_time_embedding   = False,
-        use_concat_embedding = False,
-        run_name             = "baseline",
+        output_dir     = Path("experiment_outputs/ablation_additive"),
+        embedding_mode = "additive",
+        run_name       = "additive",
     ),
 
-    # 2. + additive CEHR-BERT time embedding (requires dates.pt)
+    # 2. Additive + time — adds sinusoidal time per token (requires dates.pt)
     TrainConfig(
         **_BASE,
-        output_dir           = Path("experiment_outputs/ablation_time_emb"),
-        use_time_embedding   = True,
-        use_concat_embedding = False,
-        run_name             = "additive-time-emb",
+        output_dir     = Path("experiment_outputs/ablation_additive_time"),
+        embedding_mode = "additive+time",
+        run_name       = "additive+time",
     ),
 
-    # 3. Concat embedding — CEHR-BERT / EHRMamba style
-    #    (requires dates.pt + age_years.pt; implies time always on)
+    # 3. Concat — CEHR-BERT / EHRMamba style (requires dates.pt + age_years.pt)
+    #    Time and continuous age are always active inside the projection
     TrainConfig(
         **_BASE,
-        output_dir           = Path("experiment_outputs/ablation_concat_emb"),
-        use_time_embedding   = False,   # time is part of concat; this flag unused
-        use_concat_embedding = True,
-        run_name             = "concat-emb-cehrbert",
+        output_dir     = Path("experiment_outputs/ablation_concat"),
+        embedding_mode = "concat",
+        run_name       = "concat",
     ),
 ]
 

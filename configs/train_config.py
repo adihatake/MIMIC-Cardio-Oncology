@@ -34,16 +34,15 @@ class TrainConfig:
     wandb_project: str        = "mimic-cardio-oncology"
     run_name:      str | None = None   # defaults to wandb auto-generated name
 
-    # ── ablations ─────────────────────────────────────────────────────────────
-    # Additive sinusoidal time embedding (CEHR-BERT): sin((days/365.25)*w + φ).
-    # Requires dates.pt — re-run tokenization to generate it.
-    use_time_embedding: bool = False
-
-    # Concat→FC→GELU combination (CEHR-BERT / EHRMamba style).
-    # Concatenates [concept, time, age_sinusoidal, position] → Linear(4d→d) → GELU,
-    # then adds type + visit + segment residuals.
-    # Requires both dates.pt and age_years.pt — re-run tokenization to generate them.
-    use_concat_embedding: bool = False
+    # ── embedding mode ────────────────────────────────────────────────────────
+    # "additive"      BEHRT-style: sum of all embedding tables. No time signal.
+    # "additive+time" Additive sum + sinusoidal time per token (CEHR-BERT formula).
+    #                 Requires dates.pt.
+    # "concat"        CEHR-BERT / EHRMamba: cat([concept, time, age, position]) →
+    #                 Linear(4d→d) → GELU, then + type + visit + segment residuals.
+    #                 Time and continuous age are always active in this mode.
+    #                 Requires dates.pt and age_years.pt.
+    embedding_mode: str = "additive"
 
     # ── serialization ─────────────────────────────────────────────────────────
     def to_dict(self) -> dict:

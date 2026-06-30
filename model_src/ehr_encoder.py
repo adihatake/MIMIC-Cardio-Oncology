@@ -101,9 +101,8 @@ class EHR_Encoder(nn.Module):
         dropout:              float = 0.1,
         max_seq_len:          int   = 600,
         num_classes:          int   = 2,
-        use_time_embedding:   bool  = False,
-        time_scaling_factor:  float = 365.25,
-        use_concat_embedding: bool  = False,
+        embedding_mode:      str   = "additive",
+        time_scaling_factor: float = 365.25,
     ) -> None:
         super().__init__()
 
@@ -112,9 +111,8 @@ class EHR_Encoder(nn.Module):
             max_num_visits=max_num_visits,
             d_token_embedding=d_model,
             max_seq_len=max_seq_len,
-            use_time_embedding=use_time_embedding,
+            embedding_mode=embedding_mode,
             time_scaling_factor=time_scaling_factor,
-            use_concat_embedding=use_concat_embedding,
         )
 
         self.layers = nn.ModuleList([
@@ -158,15 +156,15 @@ if __name__ == "__main__":
     dates        = torch.randint(0, 9000, (B, S))
     age_years    = torch.FloatTensor([62.0, 47.5])
 
-    # 1. baseline
-    m1 = EHR_Encoder(num_concepts=V)
-    print("baseline:", m1(concept_ids, type_ids, visit_ids, position_ids, age_ids).shape)
+    # 1. additive (BEHRT-style, no time)
+    m1 = EHR_Encoder(num_concepts=V, embedding_mode="additive")
+    print("additive      :", m1(concept_ids, type_ids, visit_ids, position_ids, age_ids).shape)
 
-    # 2. additive time embedding
-    m2 = EHR_Encoder(num_concepts=V, use_time_embedding=True)
-    print("+ time emb:", m2(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates).shape)
+    # 2. additive+time (BEHRT + sinusoidal time)
+    m2 = EHR_Encoder(num_concepts=V, embedding_mode="additive+time")
+    print("additive+time :", m2(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates).shape)
 
-    # 3. concat embedding (CEHR-BERT style)
-    m3 = EHR_Encoder(num_concepts=V, use_concat_embedding=True)
-    print("concat emb:", m3(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates, age_years).shape)
+    # 3. concat (CEHR-BERT / EHRMamba — time + continuous age inside the projection)
+    m3 = EHR_Encoder(num_concepts=V, embedding_mode="concat")
+    print("concat        :", m3(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates, age_years).shape)
     print("ehr_encoder.py OK")

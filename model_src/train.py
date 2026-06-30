@@ -150,8 +150,7 @@ def train(args: argparse.Namespace | object) -> None:
     )
     print(f"Train batches: {len(train_dl)}  |  Val batches: {len(val_dl)}  |  Test batches: {len(test_dl)}")
 
-    use_time_embedding   = getattr(args, "use_time_embedding",   False)
-    use_concat_embedding = getattr(args, "use_concat_embedding", False)
+    embedding_mode = getattr(args, "embedding_mode", "additive")
     model = EHR_Encoder(
         num_concepts=num_concepts,
         max_num_visits=max_num_visits,
@@ -161,8 +160,7 @@ def train(args: argparse.Namespace | object) -> None:
         ff_dim=args.ff_dim,
         dropout=args.dropout,
         max_seq_len=max_seq_len,
-        use_time_embedding=use_time_embedding,
-        use_concat_embedding=use_concat_embedding,
+        embedding_mode=embedding_mode,
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -321,10 +319,14 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--wandb-project",      default="mimic-cardio-oncology", dest="wandb_project")
     p.add_argument("--run-name",           default=None, dest="run_name",
                    help="W&B run name (defaults to auto-generated).")
-    p.add_argument("--use-time-embedding",   action="store_true", dest="use_time_embedding",
-                   help="Additive CEHR-BERT sinusoidal time embedding (requires dates.pt).")
-    p.add_argument("--use-concat-embedding", action="store_true", dest="use_concat_embedding",
-                   help="CEHR-BERT concat→FC→GELU combination (requires dates.pt + age_years.pt).")
+    p.add_argument("--embedding-mode", default="additive", dest="embedding_mode",
+                   choices=["additive", "additive+time", "concat"],
+                   help=(
+                       "'additive': BEHRT-style sum, no time. "
+                       "'additive+time': sum + sinusoidal time (requires dates.pt). "
+                       "'concat': CEHR-BERT/EHRMamba concat→FC→GELU, time+age always active "
+                       "(requires dates.pt + age_years.pt)."
+                   ))
     return p.parse_args()
 
 

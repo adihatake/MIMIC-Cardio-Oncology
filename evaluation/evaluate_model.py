@@ -77,16 +77,15 @@ def _load_model(model_dir: Path, device: torch.device) -> tuple[EHR_Encoder, dic
         cfg = json.load(f)
 
     model = EHR_Encoder(
-        num_concepts         = cfg["num_concepts"],
-        max_num_visits       = cfg["max_num_visits"],
-        d_model              = cfg["d_model"],
-        num_heads            = cfg["num_heads"],
-        num_layers           = cfg["num_layers"],
-        ff_dim               = cfg["ff_dim"],
-        dropout              = cfg.get("dropout", 0.1),
-        max_seq_len          = cfg["max_seq_len"],
-        use_time_embedding   = cfg.get("use_time_embedding",   False),
-        use_concat_embedding = cfg.get("use_concat_embedding", False),
+        num_concepts   = cfg["num_concepts"],
+        max_num_visits = cfg["max_num_visits"],
+        d_model        = cfg["d_model"],
+        num_heads      = cfg["num_heads"],
+        num_layers     = cfg["num_layers"],
+        ff_dim         = cfg["ff_dim"],
+        dropout        = cfg.get("dropout", 0.1),
+        max_seq_len    = cfg["max_seq_len"],
+        embedding_mode = cfg.get("embedding_mode", "additive"),
     ).to(device)
 
     ckpt = model_dir / "best_model.pt"
