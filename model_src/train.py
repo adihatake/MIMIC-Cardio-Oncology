@@ -144,6 +144,7 @@ def train(args: argparse.Namespace | object) -> None:
         data_dir,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
+        seed=args.seed,
     )
     print(f"Train batches: {len(train_dl)}  |  Val batches: {len(val_dl)}")
 

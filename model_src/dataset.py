@@ -21,6 +21,8 @@ import json
 import sys
 from pathlib import Path
 
+import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader, Dataset
 
@@ -54,27 +56,99 @@ class CycleDataset(Dataset):
         }
 
 
+def _stratified_split(
+    subjects: np.ndarray,
+    labels: np.ndarray,
+    frac: float,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray]:
+    selected: list[int] = []
+    remaining: list[int] = []
+    for label_val in np.unique(labels):
+        stratum_idx = np.where(labels == label_val)[0]
+        rng.shuffle(stratum_idx)
+        k = max(1, round(frac * len(stratum_idx)))
+        selected.extend(stratum_idx[:k].tolist())
+        remaining.extend(stratum_idx[k:].tolist())
+    return np.array(selected), np.array(remaining)
+
+
+def _compute_row_indices(
+    data_dir: Path,
+    seed: int,
+    train_frac: float = 0.70,
+    val_frac: float = 0.15,
+) -> dict[str, list[int]]:
+    """Compute patient-level stratified split row indices from samples.parquet."""
+    samples_path = data_dir / "samples.parquet"
+    if not samples_path.exists():
+        raise FileNotFoundError(
+            f"samples.parquet not found at {data_dir}. "
+            "Run tokenize_cycle_sequences.py first."
+        )
+    samples = pd.read_parquet(samples_path)
+
+    patient_df = (
+        samples.groupby("subject_id")["binary_label"]
+        .max()
+        .reset_index()
+        .rename(columns={"binary_label": "patient_label"})
+        .sort_values("subject_id")
+        .reset_index(drop=True)
+    )
+    subjects = patient_df["subject_id"].values
+    labels   = patient_df["patient_label"].values
+    rng      = np.random.default_rng(seed)
+
+    test_frac = 1.0 - train_frac - val_frac
+    test_idx, trainval_idx = _stratified_split(subjects, labels, test_frac, rng)
+
+    val_size       = val_frac / (train_frac + val_frac)
+    trainval_labels = labels[trainval_idx]
+    val_rel_idx, train_rel_idx = _stratified_split(
+        np.arange(len(trainval_idx)), trainval_labels, val_size, rng
+    )
+    val_idx   = trainval_idx[val_rel_idx]
+    train_idx = trainval_idx[train_rel_idx]
+
+    split_subjects = {
+        "train": subjects[train_idx].tolist(),
+        "val":   subjects[val_idx].tolist(),
+        "test":  subjects[test_idx].tolist(),
+    }
+    return {
+        split: samples.index[samples["subject_id"].isin(set(sids))].tolist()
+        for split, sids in split_subjects.items()
+    }
+
+
 def get_dataloaders(
     data_dir: str | Path,
     batch_size: int = 32,
     num_workers: int = 0,
+    seed: int | None = None,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """
     Returns (train_loader, val_loader, test_loader).
-    Raises FileNotFoundError if splits.json is missing — run split_dataset.py first.
+
+    If `seed` is given, the patient split is computed in-memory from
+    samples.parquet using that seed (different seeds → different splits).
+    Otherwise falls back to splits.json — run split_dataset.py first.
     """
     data_dir = Path(data_dir)
-    splits_path = data_dir / "splits.json"
-    if not splits_path.exists():
-        raise FileNotFoundError(
-            f"splits.json not found in {data_dir}. "
-            "Run: python tokenization_src/split_dataset.py {data_dir}"
-        )
 
-    with open(splits_path) as f:
-        splits = json.load(f)
-
-    row_indices = splits["row_indices"]
+    if seed is not None:
+        row_indices = _compute_row_indices(data_dir, seed)
+    else:
+        splits_path = data_dir / "splits.json"
+        if not splits_path.exists():
+            raise FileNotFoundError(
+                f"splits.json not found in {data_dir}. "
+                "Run: python tokenization_src/split_dataset.py {data_dir}"
+            )
+        with open(splits_path) as f:
+            splits = json.load(f)
+        row_indices = splits["row_indices"]
 
     loaders: dict[str, DataLoader] = {}
     for split in ("train", "val", "test"):
