@@ -234,8 +234,7 @@ python model_src/train.py \
 | `--use-wandb` | off | Enable Weights & Biases experiment tracking |
 | `--wandb-project` | `mimic-cardio-oncology` | W&B project name |
 | `--run-name` | `None` | W&B run name (auto-generated if omitted) |
-| `--use-time-embedding` | off | Additive CEHR-BERT sinusoidal time embedding (requires `dates.pt`) |
-| `--use-concat-embedding` | off | CEHR-BERT/EHRMamba concat→FC→GELU combination (requires `dates.pt` + `age_years.pt`) |
+| `--embedding-mode` | `additive` | Embedding combination — see table below |
 
 **Outputs** (`experiment_outputs/<run>/`):
 
@@ -250,40 +249,40 @@ python model_src/train.py \
 
 ## Model architecture
 
-The model is a BERT-style encoder (`EHR_Encoder`) with three embedding modes, controlled by flags in `TrainConfig` / `--use-*` CLI args:
+The model is a BERT-style encoder (`EHR_Encoder`) with three embedding modes, selected by `embedding_mode` in `TrainConfig` or `--embedding-mode` on the CLI:
 
 ### Embedding modes
 
-**Baseline (additive, BEHRT-style)** — default:
+**`"additive"`** — BEHRT-style, default, no time signal:
 ```
 sum(concept, type, visit, segment, position, age_bucket) → LayerNorm → Dropout
 ```
 
-**+ Additive time embedding** (`use_time_embedding=True`):
+**`"additive+time"`** — additive sum plus sinusoidal time per token. Requires `dates.pt`.
 ```
 sum(concept, type, visit, segment, position, age_bucket, time_sinusoidal) → LayerNorm → Dropout
 ```
-Adds a per-token sinusoidal time embedding: `sin((days_since_2000 / 365.25) × w + φ)` where `w` and `φ` are learned parameters (CEHR-BERT formula). Requires `dates.pt`.
+Time formula: `sin((days_since_2000 / 365.25) × w + φ)` where `w` and `φ` are learned (CEHR-BERT).
 
-**Concat embedding** (`use_concat_embedding=True`, CEHR-BERT / EHRMamba style):
+**`"concat"`** — CEHR-BERT / EHRMamba style. Time and continuous age always active. Requires `dates.pt` + `age_years.pt`.
 ```
-Linear( cat([concept(d), time_sinusoidal(d), age_sinusoidal(d), position(d)]) ) → GELU
+Linear( cat([concept(d), time(d), age_sinusoidal(d), position(d)]) ) → GELU
 + type + visit + segment → LayerNorm → Dropout
 ```
-Replaces the additive sum with a learned projection of the four temporally-sensitive embeddings. Age uses a continuous sinusoidal embedding on the exact age in years (not decade buckets). Requires both `dates.pt` and `age_years.pt`.
+Age is encoded as a continuous sinusoidal on exact age in years (not decade buckets).
 
 ### Embedding components
 
-| Component | Additive mode | Concat mode |
-|---|---|---|
-| Concept | `nn.Embedding(vocab, d)` | same |
-| Type | `nn.Embedding(5, d)` | additive residual |
-| Visit | `nn.Embedding(max_visits, d)` | additive residual |
-| Segment | `nn.Embedding(2, d)`, `visit_id % 2` | additive residual |
-| Position | `nn.Embedding(max_seq_len, d)` | in concat |
-| Age | `nn.Embedding(10, d)`, decade bucket | `sin(age_years × w + φ)`, in concat |
-| Time | `sin((days/365.25) × w + φ)`, optional additive | `sin((days/365.25) × w + φ)`, in concat |
-| Projection | — | `nn.Linear(4d → d)` |
+| Component | `"additive"` | `"additive+time"` | `"concat"` |
+|---|---|---|---|
+| Concept | `nn.Embedding(vocab, d)` | same | in concat |
+| Type | `nn.Embedding(5, d)` | same | additive residual |
+| Visit | `nn.Embedding(max_visits, d)` | same | additive residual |
+| Segment | `nn.Embedding(2, d)`, `visit_id % 2` | same | additive residual |
+| Position | `nn.Embedding(max_seq_len, d)` | same | in concat |
+| Age | decade bucket `nn.Embedding(10, d)` | same | `sin(age_years × w + φ)`, in concat |
+| Time | — | `sin((days/365.25) × w + φ)`, additive | `sin((days/365.25) × w + φ)`, in concat |
+| Projection | — | — | `nn.Linear(4d → d)` |
 
 ### Encoder
 
@@ -302,13 +301,13 @@ EHR_Event_Embedding → N × TransformerEncoderLayer (pre-norm, GELU FFN) → CL
 
 ## Embedding ablations
 
-Three ablation axes, all independently togglable via `TrainConfig`:
+Set `embedding_mode` in `TrainConfig` or pass `--embedding-mode` on the CLI:
 
-| `run_train.py` config | `use_time_embedding` | `use_concat_embedding` | Notes |
+| `embedding_mode` | Time signal | Age encoding | Requires |
 |---|---|---|---|
-| `ablation_baseline` | False | False | additive sum, decade-bucket age |
-| `ablation_time_emb` | True | False | + additive sinusoidal time |
-| `ablation_concat_emb` | False | True | concat→FC→GELU, continuous age |
+| `"additive"` | none | decade bucket | — |
+| `"additive+time"` | additive sinusoidal | decade bucket | `dates.pt` |
+| `"concat"` | inside projection | continuous sinusoidal | `dates.pt` + `age_years.pt` |
 
 Tokenization-level ablations (set in `run_tokenization.py` / `TokenizationConfig`):
 
@@ -317,7 +316,7 @@ Tokenization-level ablations (set in `run_tokenization.py` / `TokenizationConfig
 | `insert_att=True` | ATT tokens between visits (`W0`–`W3`, `M1`–`M11`, `LT`) |
 | `insert_visit_delimiters=True` | `[V_START]`/`[V_END]` around each hospital visit |
 
-All model ablations require running tokenization first to generate `dates.pt` and `age_years.pt`.
+`dates.pt` and `age_years.pt` are always written by the tokenizer — no special flag needed.
 
 ---
 
@@ -355,26 +354,23 @@ Each `seed` value independently controls two things:
 ```python
 RUNS = [
     TrainConfig(
-        data_dir             = Path("tokenization_outputs/ver1"),
-        output_dir           = Path("experiment_outputs/ablation_baseline"),
-        d_model              = 768, num_heads = 12, num_layers = 12, ff_dim = 3072,
-        use_time_embedding   = False,
-        use_concat_embedding = False,
-        run_name             = "baseline",
+        data_dir       = Path("tokenization_outputs/ver1"),
+        output_dir     = Path("experiment_outputs/ablation_additive"),
+        d_model        = 768, num_heads = 12, num_layers = 12, ff_dim = 3072,
+        embedding_mode = "additive",
+        run_name       = "additive",
     ),
     TrainConfig(
-        data_dir             = Path("tokenization_outputs/ver1"),
-        output_dir           = Path("experiment_outputs/ablation_time_emb"),
-        use_time_embedding   = True,   # requires dates.pt
-        use_concat_embedding = False,
-        run_name             = "additive-time-emb",
+        data_dir       = Path("tokenization_outputs/ver1"),
+        output_dir     = Path("experiment_outputs/ablation_additive_time"),
+        embedding_mode = "additive+time",   # requires dates.pt
+        run_name       = "additive+time",
     ),
     TrainConfig(
-        data_dir             = Path("tokenization_outputs/ver1"),
-        output_dir           = Path("experiment_outputs/ablation_concat_emb"),
-        use_time_embedding   = False,
-        use_concat_embedding = True,   # requires dates.pt + age_years.pt
-        run_name             = "concat-emb-cehrbert",
+        data_dir       = Path("tokenization_outputs/ver1"),
+        output_dir     = Path("experiment_outputs/ablation_concat"),
+        embedding_mode = "concat",          # requires dates.pt + age_years.pt
+        run_name       = "concat",
     ),
 ]
 ```
@@ -592,16 +588,17 @@ python tokenization_src/tokenize_cli.py \
     --insert-att \
     --insert-visit-delimiters
 
-# 3a. Baseline (no time embedding)
+# 3a. Additive baseline (no time)
 python model_src/train.py \
     --data-dir tokenization_outputs/ver1_cehrbert \
-    --output-dir experiment_outputs/ablation_baseline
+    --output-dir experiment_outputs/ablation_additive \
+    --embedding-mode additive
 
-# 3b. CEHR-BERT concat embedding
+# 3b. CEHR-BERT / EHRMamba concat embedding
 python model_src/train.py \
     --data-dir tokenization_outputs/ver1_cehrbert \
-    --output-dir experiment_outputs/ablation_concat_emb \
-    --use-concat-embedding
+    --output-dir experiment_outputs/ablation_concat \
+    --embedding-mode concat
 ```
 
 Or define all three ablation configs in `run_train.py` and run:
