@@ -18,6 +18,8 @@ class TokenizationConfig:
     run_summarize:           bool = True
     insert_att:              bool = False  # CEHR-BERT ATT tokens between visits
     insert_visit_delimiters: bool = False  # [V_START]/[V_END] around each visit
+    bucket_labs:             bool = False  # append per-itemid quantile bucket (Q1-Q4) to lab tokens
+    bucket_medications:      bool = False  # append per-drug dose-tier bucket (Q1-Q4) to medication tokens
 
     # ── derived (read-only) ───────────────────────────────────────────────────
     @property

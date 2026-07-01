@@ -217,11 +217,14 @@ def _build_procedures(hadm_ids: set[int], admissions: pd.DataFrame) -> pd.DataFr
                  "event_type", "concept_token", "event_priority", "visit_id"]]
 
 
-def _build_medications(hadm_ids: set[int], admissions: pd.DataFrame) -> pd.DataFrame:
+def _build_medications(hadm_ids: set[int], admissions: pd.DataFrame, bucket: bool = False) -> pd.DataFrame:
     t0 = time.time()
+    usecols = ["subject_id", "hadm_id", "starttime", "drug"]
+    if bucket:
+        usecols.append("dose_val_rx")
     rx = pd.read_csv(
         HOSP_DIR / "prescriptions.csv",
-        usecols=["subject_id", "hadm_id", "starttime", "drug"],
+        usecols=usecols,
         parse_dates=["starttime"],
     )
     rx = rx[rx["hadm_id"].isin(hadm_ids)].dropna(subset=["starttime"]).copy()
@@ -230,17 +233,48 @@ def _build_medications(hadm_ids: set[int], admissions: pd.DataFrame) -> pd.DataF
         admissions[["hadm_id", "admittime", "visit_id"]],
         on="hadm_id", how="left",
     )
-    rx["event_time"]     = rx["starttime"]
-    rx["event_type"]     = "medication"
-    rx["concept_token"]  = "medication::" + rx["drug"].astype(str).str.lower().str.strip()
+    rx["event_time"] = rx["starttime"]
+    rx["event_type"] = "medication"
+    rx["drug_norm"]  = rx["drug"].astype(str).str.lower().str.strip()
+
+    if bucket:
+        rx["_dose_num"] = pd.to_numeric(
+            rx["dose_val_rx"].astype(str).str.extract(r"(\d+\.?\d*)", expand=False),
+            errors="coerce",
+        )
+        drug_cutoffs = (
+            rx.dropna(subset=["_dose_num"])
+            .groupby("drug_norm")["_dose_num"]
+            .quantile([0.25, 0.5, 0.75])
+            .unstack(level=-1)
+            .rename(columns={0.25: "p25", 0.5: "p50", 0.75: "p75"})
+        )
+        rx = rx.merge(drug_cutoffs.reset_index(), on="drug_norm", how="left")
+        has_dose = rx["_dose_num"].notna() & rx["p25"].notna()
+        suffix = np.select(
+            [
+                has_dose & (rx["_dose_num"] <= rx["p25"]),
+                has_dose & (rx["_dose_num"] > rx["p25"]) & (rx["_dose_num"] <= rx["p50"]),
+                has_dose & (rx["_dose_num"] > rx["p50"]) & (rx["_dose_num"] <= rx["p75"]),
+                has_dose & (rx["_dose_num"] > rx["p75"]),
+            ],
+            ["_dose_Q1", "_dose_Q2", "_dose_Q3", "_dose_Q4"],
+            default="",
+        )
+        rx["concept_token"] = "medication::" + rx["drug_norm"] + suffix
+        rx = rx.drop(columns=["dose_val_rx", "_dose_num", "p25", "p50", "p75"])
+    else:
+        rx["concept_token"] = "medication::" + rx["drug_norm"]
+
+    rx = rx.drop(columns=["drug_norm"])
     rx["event_priority"] = rx.groupby(["subject_id", "hadm_id", "starttime"]).cumcount()
     return rx[["subject_id", "hadm_id", "admittime", "event_time",
                "event_type", "concept_token", "event_priority", "visit_id"]]
 
 
 def _build_labs(subject_ids: set[int], hadm_ids: set[int],
-                admissions: pd.DataFrame) -> pd.DataFrame:
-    # Because of how massive (18GB) the lab events csv file is, DuckDB reads the 18 GB CSV in 
+                admissions: pd.DataFrame, bucket: bool = False) -> pd.DataFrame:
+    # Because of how massive (18GB) the lab events csv file is, DuckDB reads the 18 GB CSV in
     # parallel and pushes the JOIN filters down into the scan, so only matching rows ever enter memory.
     t0 = time.time()
     file_path = str(HOSP_DIR / "labevents.csv")
@@ -248,11 +282,15 @@ def _build_labs(subject_ids: set[int], hadm_ids: set[int],
     sid_df = pd.DataFrame({"subject_id": list(subject_ids)})
     hid_df = pd.DataFrame({"hadm_id":    list(hadm_ids)})
 
+    select_cols = "l.subject_id, l.hadm_id, l.itemid, l.storetime, l.flag"
+    if bucket:
+        select_cols += ", l.valuenum"
+
     con = duckdb.connect()
     con.register("sid_filter", sid_df)
     con.register("hid_filter", hid_df)
     lab = con.execute(f"""
-        SELECT l.subject_id, l.hadm_id, l.itemid, l.storetime, l.flag
+        SELECT {select_cols}
         FROM read_csv_auto('{file_path}', header = true) l
         INNER JOIN sid_filter USING (subject_id)
         INNER JOIN hid_filter USING (hadm_id)
@@ -272,13 +310,42 @@ def _build_labs(subject_ids: set[int], hadm_ids: set[int],
     )
     lab["event_time"]     = lab["storetime"]
     lab["event_type"]     = "lab"
-    lab["concept_token"]  = "lab::" + lab["itemid"].astype(str)
     lab["event_priority"] = 0
+
+    if bucket:
+        cutoffs = (
+            lab.dropna(subset=["valuenum"])
+            .groupby("itemid")["valuenum"]
+            .quantile([0.25, 0.5, 0.75])
+            .unstack(level=-1)
+            .rename(columns={0.25: "p25", 0.5: "p50", 0.75: "p75"})
+        )
+        lab = lab.merge(cutoffs.reset_index(), on="itemid", how="left")
+        has_val = lab["valuenum"].notna() & lab["p25"].notna()
+        suffix = np.select(
+            [
+                has_val & (lab["valuenum"] <= lab["p25"]),
+                has_val & (lab["valuenum"] > lab["p25"]) & (lab["valuenum"] <= lab["p50"]),
+                has_val & (lab["valuenum"] > lab["p50"]) & (lab["valuenum"] <= lab["p75"]),
+                has_val & (lab["valuenum"] > lab["p75"]),
+            ],
+            ["_Q1", "_Q2", "_Q3", "_Q4"],
+            default="",
+        )
+        lab["concept_token"] = "lab::" + lab["itemid"].astype(str) + suffix
+        lab = lab.drop(columns=["valuenum", "p25", "p50", "p75"])
+    else:
+        lab["concept_token"] = "lab::" + lab["itemid"].astype(str)
+
     return lab[["subject_id", "hadm_id", "admittime", "event_time",
                 "event_type", "concept_token", "event_priority", "visit_id"]]
 
 
-def build_master_events(subject_ids: set[int]) -> tuple[pd.DataFrame, pd.DataFrame]:
+def build_master_events(
+    subject_ids: set[int],
+    bucket_labs: bool = False,
+    bucket_medications: bool = False,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Load and merge all EHR event types into one chronologically sorted DataFrame."""
     print("Loading admissions...")
     admissions = _load_admissions(subject_ids)
@@ -289,8 +356,8 @@ def build_master_events(subject_ids: set[int]) -> tuple[pd.DataFrame, pd.DataFra
     print("Loading procedures...")
     proc = _build_procedures(hadm_ids, admissions)
     print("Loading medications (prescriptions)...")
-    med  = _build_medications(hadm_ids, admissions)
-    labs = _build_labs(subject_ids, hadm_ids, admissions)
+    med  = _build_medications(hadm_ids, admissions, bucket=bucket_medications)
+    labs = _build_labs(subject_ids, hadm_ids, admissions, bucket=bucket_labs)
 
     master = pd.concat([dx, proc, med, labs], ignore_index=True)
     master["admittime"]   = pd.to_datetime(master["admittime"], errors="coerce")
@@ -452,6 +519,8 @@ def main(
     max_seq_len: int | None = None,
     insert_att: bool = False,
     insert_visit_delimiters: bool = False,
+    bucket_labs: bool = False,
+    bucket_medications: bool = False,
 ) -> None:
     global MAX_SEQ_LEN, MODELING_DIR, OUTPUT_DIR, DATA_DIR, HOSP_DIR
     DATA_DIR = data_dir
@@ -474,7 +543,7 @@ def main(
     patients_df = _load_patients(subject_ids)
 
     print("Building master EHR event timeline...")
-    master_df, _ = build_master_events(subject_ids)
+    master_df, _ = build_master_events(subject_ids, bucket_labs=bucket_labs, bucket_medications=bucket_medications)
     print(f"  {len(master_df):,} total events loaded")
 
     print("Building concept vocabulary...")
@@ -587,8 +656,10 @@ def main(
         "has_dates":              True,
         "has_age_years":          True,
         "time_reference_date":    str(TIME_REFERENCE_DATE.date()),
-        "insert_att":             insert_att,
+        "insert_att":              insert_att,
         "insert_visit_delimiters": insert_visit_delimiters,
+        "bucket_labs":             bucket_labs,
+        "bucket_medications":      bucket_medications,
     }
     with open(OUTPUT_DIR / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
@@ -615,7 +686,10 @@ if __name__ == "__main__":
     p.add_argument("--max-seq-len",default=None, type=int,   help="Max token sequence length")
     p.add_argument("--insert-att",              action="store_true", help="Insert CEHR-BERT ATT tokens between visits")
     p.add_argument("--insert-visit-delimiters", action="store_true", help="Wrap each visit with [V_START]/[V_END] tokens")
+    p.add_argument("--bucket-labs",        action="store_true", help="Append per-itemid quantile bucket (Q1-Q4) to lab tokens")
+    p.add_argument("--bucket-medications", action="store_true", help="Append per-drug dose-tier bucket (Q1-Q4) to medication tokens")
     a = p.parse_args()
     main(data_dir=a.data_dir, cohort_name=a.cohort, output_name=a.name,
          max_seq_len=a.max_seq_len, insert_att=a.insert_att,
-         insert_visit_delimiters=a.insert_visit_delimiters)
+         insert_visit_delimiters=a.insert_visit_delimiters,
+         bucket_labs=a.bucket_labs, bucket_medications=a.bucket_medications)

@@ -83,6 +83,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Equivalent to --split --summarize.",
     )
+    parser.add_argument(
+        "--bucket-labs",
+        action="store_true",
+        help="Append per-itemid quantile bucket (Q1-Q4) to lab tokens.",
+    )
+    parser.add_argument(
+        "--bucket-medications",
+        action="store_true",
+        help="Append per-drug dose-tier bucket (Q1-Q4) to medication tokens.",
+    )
     return parser.parse_args()
 
 
@@ -104,6 +114,8 @@ def main() -> None:
     print(f"  data dir      : {data_dir}")
     print(f"  run split     : {run_split}")
     print(f"  run summarize : {run_summarize}")
+    print(f"  bucket labs   : {args.bucket_labs}")
+    print(f"  bucket meds   : {args.bucket_medications}")
     print("=" * 55)
     print()
 
@@ -114,6 +126,8 @@ def main() -> None:
         cohort_name=args.cohort,
         output_name=args.name,
         max_seq_len=args.max_seq_len,
+        bucket_labs=args.bucket_labs,
+        bucket_medications=args.bucket_medications,
     )
 
     # ── step 2: split ─────────────────────────────────────────────────────────

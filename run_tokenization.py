@@ -19,8 +19,8 @@ REPO_ROOT = Path(__file__).resolve().parent
 cfg = TokenizationConfig(
     data_dir      = REPO_ROOT.parent / "MIMIC_IV_raw_data",
     cohort_name   = "cycle_modeling_v3",
-    output_name   = "Jun26_1000",
-    max_seq_len   = 1000,
+    output_name   = "Jun30_512_",
+    max_seq_len   = 512,
     run_split     = False,
     run_summarize = True,
 )
@@ -40,6 +40,8 @@ if __name__ == "__main__":
         max_seq_len             = cfg.max_seq_len,
         insert_att              = cfg.insert_att,
         insert_visit_delimiters = cfg.insert_visit_delimiters,
+        bucket_labs             = cfg.bucket_labs,
+        bucket_medications      = cfg.bucket_medications,
     )
 
     if cfg.run_split:
