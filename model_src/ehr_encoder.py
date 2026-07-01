@@ -23,7 +23,7 @@ from embedding_layers import EHR_Event_Embedding
 
 
 class MultiHeadedAttention(nn.Module):
-    def __init__(self, d_model: int, num_heads: int) -> None:
+    def __init__(self, d_model: int, num_heads: int, dropout: float) -> None:
         super().__init__()
         assert d_model % num_heads == 0
         self.d_head    = d_model // num_heads
@@ -34,6 +34,7 @@ class MultiHeadedAttention(nn.Module):
         self.W_k = nn.Linear(d_model, d_model)
         self.W_v = nn.Linear(d_model, d_model)
         self.W_o = nn.Linear(d_model, d_model)
+        self.attn_dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, padding_mask: torch.Tensor | None) -> torch.Tensor:
         # x: (batch, seq_len, d_model)
@@ -49,7 +50,7 @@ class MultiHeadedAttention(nn.Module):
         if padding_mask is not None:
             scores = scores.masked_fill(padding_mask[:, None, None, :] == 0, float("-inf"))
 
-        attn_weights = torch.softmax(scores, dim=-1)
+        attn_weights = self.attn_dropout(torch.softmax(scores, dim=-1))
         context = torch.matmul(attn_weights, V)
         context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
         return self.W_o(context)
@@ -58,7 +59,7 @@ class MultiHeadedAttention(nn.Module):
 class TransformerEncoderLayer(nn.Module):
     def __init__(self, d_model: int, num_heads: int, ff_dim: int, dropout: float) -> None:
         super().__init__()
-        self.attn    = MultiHeadedAttention(d_model, num_heads)
+        self.attn    = MultiHeadedAttention(d_model, num_heads, dropout)
         self.norm1   = nn.LayerNorm(d_model)
         self.norm2   = nn.LayerNorm(d_model)
         self.ffn     = nn.Sequential(
@@ -70,8 +71,9 @@ class TransformerEncoderLayer(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor, padding_mask: torch.Tensor | None) -> torch.Tensor:
-        x = self.norm1(x + self.dropout(self.attn(x, padding_mask)))
-        x = self.norm2(x + self.dropout(self.ffn(x)))
+        # Pre-norm: normalize input before each sub-layer (more stable than post-norm)
+        x = x + self.dropout(self.attn(self.norm1(x), padding_mask))
+        x = x + self.dropout(self.ffn(self.norm2(x)))
         return x
 
 
@@ -120,7 +122,9 @@ class EHR_Encoder(nn.Module):
             for _ in range(num_layers)
         ])
 
-        self.classifier = nn.Linear(d_model, num_classes)
+        self.norm         = nn.LayerNorm(d_model)   # final norm (required after pre-norm stack)
+        self.cls_dropout  = nn.Dropout(dropout)
+        self.classifier   = nn.Linear(d_model, num_classes)
 
     def forward(
         self,
@@ -142,7 +146,8 @@ class EHR_Encoder(nn.Module):
         for layer in self.layers:
             x = layer(x, padding_mask)
 
-        cls = x[:, 0, :]
+        x   = self.norm(x)
+        cls = self.cls_dropout(x[:, 0, :])
         return self.classifier(cls)
 
 # Smoke test using random tensors
