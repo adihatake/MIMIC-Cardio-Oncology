@@ -97,13 +97,7 @@ def plot(
     ax_loss.set_ylabel("Cross-entropy loss")
     ax_loss.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
     ax_loss.grid(alpha=0.3)
-    # Legend below the subplot; ncol spreads entries horizontally
-    ax_loss.legend(
-        fontsize=8, loc="upper center",
-        bbox_to_anchor=(0.5, -0.18),
-        ncol=max(1, min(4, n)),
-        borderaxespad=0, frameon=True,
-    )
+    ax_loss.legend(fontsize=8, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
 
     # ── AUROC axes ────────────────────────────────────────────────────────────
     ax_auroc.set_title("Validation AUROC", fontsize=13, fontweight="bold")
@@ -113,16 +107,9 @@ def plot(
     ax_auroc.axhline(0.5, color="gray", linestyle="--", linewidth=0.8, label="random (0.5)")
     ax_auroc.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
     ax_auroc.grid(alpha=0.3)
-    ax_auroc.legend(
-        fontsize=8, loc="upper center",
-        bbox_to_anchor=(0.5, -0.18),
-        ncol=max(1, min(3, n + 1)),
-        borderaxespad=0, frameon=True,
-    )
+    ax_auroc.legend(fontsize=8, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
 
-    # Leave room below each subplot for the legends
     fig.tight_layout()
-    fig.subplots_adjust(bottom=0.28)
 
     if save_path:
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
