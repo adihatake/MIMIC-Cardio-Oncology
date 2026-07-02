@@ -139,42 +139,72 @@ def print_table(rows: list[dict], sort_by: str) -> None:
 
 # ── plot ──────────────────────────────────────────────────────────────────────
 
-def plot_comparison(rows: list[dict], save_path: Path | None, dpi: int) -> None:
+def plot_comparison(
+    rows: list[dict],
+    save_path: Path | None,
+    dpi: int,
+    figsize: tuple[float, float] | None = None,
+) -> None:
     try:
         import matplotlib.pyplot as plt
+        import matplotlib.patches as mpatches
         import numpy as np
     except ImportError:
         print("matplotlib is required.  pip install matplotlib")
         sys.exit(1)
 
     rows = sorted(rows, key=lambda r: r["id"])
-    ids    = [r["id"]         for r in rows]
-    means  = [r["auroc_mean"] for r in rows]
-    stds   = [r["auroc_std"]  for r in rows]
+    ids   = [r["id"]         for r in rows]
+    means = [r["auroc_mean"] for r in rows]
+    stds  = [r["auroc_std"]  for r in rows]
+    n     = len(ids)
 
-    x = np.arange(len(ids))
+    x = np.arange(n)
 
-    fig, ax = plt.subplots(figsize=(max(8, len(ids) * 1.2), 5))
-    bars = ax.bar(x, means, yerr=stds, capsize=5, width=0.6,
-                  color="steelblue", alpha=0.85, ecolor="black", error_kw={"linewidth": 1.5})
+    # Color: XGBoost baselines get a warm orange, transformer ablations stay steelblue
+    colors = ["#e07b39" if rid.upper().startswith("XGB") else "steelblue" for rid in ids]
+
+    if figsize is None:
+        figsize = (max(10, n * 1.8), max(6, n * 0.5))
+
+    fig, ax = plt.subplots(figsize=figsize)
+    bars = ax.bar(
+        x, means, yerr=stds, capsize=5, width=0.6,
+        color=colors, alpha=0.85, ecolor="black", error_kw={"linewidth": 1.5},
+    )
 
     # Annotate each bar with mean ± std
     for bar, mean, std in zip(bars, means, stds):
         ax.text(
             bar.get_x() + bar.get_width() / 2,
-            bar.get_height() + std + 0.005,
+            bar.get_height() + std + 0.008,
             f"{mean:.3f}\n±{std:.3f}",
-            ha="center", va="bottom", fontsize=8,
+            ha="center", va="bottom", fontsize=9,
         )
 
-    ax.axhline(0.5, color="gray", linestyle="--", linewidth=0.8, label="random (0.5)")
+    ax.axhline(0.5, color="gray", linestyle="--", linewidth=0.9)
     ax.set_xticks(x)
-    ax.set_xticklabels(ids, fontsize=11)
-    ax.set_ylabel("Test AUROC", fontsize=12)
-    ax.set_title("Ablation comparison — Test AUROC (mean ± std across seeds)", fontsize=13)
-    ax.set_ylim(0, 1.05)
-    ax.legend(fontsize=9)
+    ax.set_xticklabels(ids, fontsize=11, rotation=30, ha="right")
+    ax.set_ylabel("Test AUROC", fontsize=13)
+    ax.set_title("Ablation comparison — Test AUROC (mean ± std across seeds)", fontsize=14)
+    ax.set_ylim(0, 1.12)   # extra headroom so bar labels don't clip
     ax.grid(axis="y", alpha=0.3)
+
+    # Legend outside the plot on the right so it never overlaps bars
+    legend_handles = [
+        mpatches.Patch(color="steelblue", alpha=0.85, label="Transformer ablation"),
+        mpatches.Patch(color="#e07b39",   alpha=0.85, label="XGBoost baseline"),
+        plt.Line2D([0], [0], color="gray", linestyle="--", linewidth=0.9, label="Random (0.5)"),
+    ]
+    ax.legend(
+        handles=legend_handles,
+        fontsize=10,
+        loc="upper left",
+        bbox_to_anchor=(1.01, 1),
+        borderaxespad=0,
+        frameon=True,
+    )
+
     fig.tight_layout()
 
     if save_path:
@@ -197,6 +227,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--sort",  default="id", choices=["id", "auroc"],
                    help="Sort table rows by ablation ID or by mean AUROC.")
     p.add_argument("--dpi",   type=int, default=150)
+    p.add_argument(
+        "--figsize", nargs=2, type=float, metavar=("W", "H"), default=None,
+        help="Figure width and height in inches (e.g. --figsize 20 8). "
+             "Auto-scales by number of bars if omitted.",
+    )
     p.add_argument("--no-plot", action="store_true",
                    help="Print table only, skip the bar chart.")
     return p.parse_args()
@@ -220,7 +255,8 @@ def main() -> None:
 
     if not args.no_plot:
         save_path = Path(args.save) if args.save else None
-        plot_comparison(rows, save_path, args.dpi)
+        figsize   = tuple(args.figsize) if args.figsize else None
+        plot_comparison(rows, save_path, args.dpi, figsize=figsize)
 
 
 if __name__ == "__main__":
