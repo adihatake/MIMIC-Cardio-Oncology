@@ -51,55 +51,23 @@ import model_src.train as train_module
 
 # ── shared hyperparameters ────────────────────────────────────────────────────
 _BASE = dict(
-    data_dir     = Path("tokenization_outputs/Jul1_512"),
     epochs       = 100,
-    batch_size   = 16,
+    batch_size   = 32,
     lr           = 1e-4,
     weight_decay = 1e-2,
-    d_model      = 256,
+    d_model      = 128,
     num_heads    = 8,
     num_layers   = 5,
-    ff_dim       = 1024,
-    dropout      = 0.1,
+    ff_dim       = 512,
+    dropout      = 0.5,
     device       = "auto",
     num_workers  = 2,
     use_wandb    = False,
 )
 
-<<<<<<< HEAD
-# ── stage 1: bucketing comparison (A0 baseline on unbucketed vs bucketed) ─────
-# Goal: decide whether bucketed labs/meds improves performance before running
-# the full embedding ablation sweep.
-# Once done, compare with:
-#   python evaluation/compare_ablations.py experiment_outputs/Jul1_bucket_comparison/ --sort auroc
-=======
 # ── define runs ───────────────────────────────────────────────────────────────
 
-SEEDS = [42, 43, 44, 45, 46]
-RUNS  = []
-
-RUNS += [TrainConfig(**_BASE,
-                     seed           = s,
-                     output_dir     = Path(f"experiment_outputs/Jun30_512_revised/baseline/seed{s}"),
-                     embedding_mode = "additive")
-         for s in SEEDS]
-
-RUNS += [TrainConfig(**_BASE,
-                     seed           = s,
-                     output_dir     = Path(f"experiment_outputs/Jun30_512_revised/baseline_time/seed{s}"),
-                     embedding_mode = "additive+time")
-         for s in SEEDS]
-
-RUNS += [TrainConfig(**_BASE,
-                     seed           = s,
-                     output_dir     = Path(f"experiment_outputs/Jun30_512_revised/concat_sinusoid/seed{s}"),
-                     embedding_mode = "concat")
-         for s in SEEDS]
-
-# ── define runs ───────────────────────────────────────────────────────────────
->>>>>>> 48f4d0d (resolving merge conflicts)
-
-SEEDS = [42, 43, 44, 45, 46]
+SEEDS = [42, 43, 44]
 RUNS  = []
 
 for s in SEEDS:
@@ -108,16 +76,14 @@ for s in SEEDS:
         **_BASE,
         data_dir   = Path("tokenization_outputs/Jul1_512"),
         seed       = s,
-        output_dir = Path(f"experiment_outputs/Jul1_bucket_comparison/unbucketed/seed{s}"),
-        run_name   = f"unbucketed-seed{s}",
+        output_dir = Path(f"experiment_outputs/Jul1_dropout_comparison/unbucketed/seed{s}"),
     ))
     # Bucketed baseline (labs + medications)
     RUNS.append(TrainConfig(
         **_BASE,
         data_dir   = Path("tokenization_outputs/Jul1_512_bucketed_all"),
         seed       = s,
-        output_dir = Path(f"experiment_outputs/Jul1_bucket_comparison/bucketed/seed{s}"),
-        run_name   = f"bucketed-seed{s}",
+        output_dir = Path(f"experiment_outputs/Jul1_dropout_comparison/bucketed/seed{s}_b"),
     ))
 
 # ── stage 2: full embedding ablation sweep (uncomment after picking tokenization) ──
