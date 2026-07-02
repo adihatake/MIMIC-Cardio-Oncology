@@ -15,18 +15,28 @@ Each TrainConfig.seed controls TWO things independently:
 
 To estimate variance, repeat each ablation across multiple seeds:
     SEEDS = [42, 43, 44]
-    RUNS  = [TrainConfig(**_BASE, seed=s, output_dir=f".../{name}_seed{s}", ...)
-             for s in SEEDS for name, kwargs in ABLATIONS]
+    RUNS  = [TrainConfig(**_BASE, **emb, seed=s, output_dir=..., run_name=...)
+             for name, emb in ABLATIONS for s in SEEDS]
 ────────────────────────────────────────────────────────────────────────────────
 
-─── Embedding modes (embedding_mode) ───────────────────────────────────────────
-  "additive"      BEHRT-style: additive sum of all embedding tables. No time signal.
-  "additive+time" Additive sum + sinusoidal time per token (CEHR-BERT formula).
-                  Requires dates.pt.
-  "concat"        CEHR-BERT / EHRMamba: cat([concept, time, age, position]) →
-                  Linear(4d→d) → GELU, then + type + visit + segment residuals.
-                  Time and continuous age are always active in this mode.
-                  Requires dates.pt and age_years.pt.
+─── Embedding ablation flags ────────────────────────────────────────────────────
+  fusion    "add"    BEHRT-style element-wise sum of all embedding tables.
+            "concat" CEHR-BERT/EHRMamba: cat([concept, time*, age*, position]) →
+                     Linear(4d→d) → GELU, then type/visit/segment as residuals.
+                     Components zeroed when disabled — same weight shape across B0-B2.
+  use_time  bool     Sinusoidal time-gap embedding per token (requires dates.pt).
+  use_age   bool     Continuous-age sinusoidal embedding (requires age_years.pt).
+
+  Ablation grid:
+    A0  add,    use_time=F, use_age=F  — baseline (no temporal info)
+    A1  add,    use_time=T, use_age=F  — + relative time gaps
+    A2  add,    use_time=F, use_age=T  — + patient age
+    A3  add,    use_time=T, use_age=T  — + time + age (best additive)
+    B0  concat, use_time=F, use_age=F  — concat fusion only
+    B1  concat, use_time=T, use_age=F  — concat + time
+    B2  concat, use_time=T, use_age=T  — CEHR-BERT/EHRMamba style
+    C1  same flags as best A/B, data_dir built with insert_att=True
+    C2  concat, use_time=T, use_age=T, data_dir built with insert_att=True
 
 Tokenisation flags (set when running run_tokenization.py):
   insert_att               ATT tokens (W0-W3, M1-M11, LT) between visits
@@ -41,56 +51,52 @@ import model_src.train as train_module
 
 # ── shared hyperparameters ────────────────────────────────────────────────────
 _BASE = dict(
-    data_dir      = Path("tokenization_outputs/Jun26_1000"),
-    epochs        = 1,
-    batch_size    = 8,
-    lr            = 1e-4,
-    d_model       = 768,
-    num_heads     = 12,
-    num_layers    = 12,
-    ff_dim        = 3072,
-    dropout       = 0.1,
-    device        = "auto",
-    seed          = 42,       # controls both patient split AND model init
-    num_workers   = 6,
-    use_wandb     = False,
-    wandb_project = "mimic-cardio-oncology",
+    data_dir     = Path("tokenization_outputs/Jun30_512"),
+    epochs       = 100,
+    batch_size   = 16,
+    lr           = 1e-4,
+    weight_decay = 1e-2,
+    d_model      = 256,
+    num_heads    = 8,
+    num_layers   = 5,
+    ff_dim       = 1024,
+    dropout      = 0.1,
+    device       = "auto",
+    num_workers  = 2,
+    use_wandb    = False,
 )
 
-# ── define runs ───────────────────────────────────────────────────────────────
-# To run multi-seed experiments, expand like:
-#   SEEDS = [42, 43, 44]
-#   RUNS  = [TrainConfig(**_BASE, seed=s,
-#                        output_dir=Path(f"experiment_outputs/baseline_seed{s}"),
-#                        run_name=f"baseline-seed{s}")
-#            for s in SEEDS]
+# ── ablation definitions ──────────────────────────────────────────────────────
+# Each entry: (ablation_id, embedding kwargs)
+# C1/C2 require a separate data_dir built with insert_att=True — uncomment and
+# set data_dir once that tokenization exists.
 
-RUNS = [
-    # 1. Additive — BEHRT-style, no time signal
-    TrainConfig(
-        **_BASE,
-        output_dir     = Path("experiment_outputs/ablation_additive"),
-        embedding_mode = "additive",
-        run_name       = "additive",
-    ),
-
-    # 2. Additive + time — adds sinusoidal time per token (requires dates.pt)
-    TrainConfig(
-        **_BASE,
-        output_dir     = Path("experiment_outputs/ablation_additive_time"),
-        embedding_mode = "additive+time",
-        run_name       = "additive+time",
-    ),
-
-    # 3. Concat — CEHR-BERT / EHRMamba style (requires dates.pt + age_years.pt)
-    #    Time and continuous age are always active inside the projection
-    TrainConfig(
-        **_BASE,
-        output_dir     = Path("experiment_outputs/ablation_concat"),
-        embedding_mode = "concat",
-        run_name       = "concat",
-    ),
+ABLATIONS = [
+    ("A0", dict(fusion="add",    use_time=False, use_age=False)),
+    ("A1", dict(fusion="add",    use_time=True,  use_age=False)),
+    ("A2", dict(fusion="add",    use_time=False, use_age=True)),
+    ("A3", dict(fusion="add",    use_time=True,  use_age=True)),
+    ("B0", dict(fusion="concat", use_time=False, use_age=False)),
+    ("B1", dict(fusion="concat", use_time=True,  use_age=False)),
+    ("B2", dict(fusion="concat", use_time=True,  use_age=True)),
+    # C1 / C2: uncomment after building an insert_att=True tokenization
+    # ("C2", dict(fusion="concat", use_time=True,  use_age=True)),
 ]
+
+# ── define runs ───────────────────────────────────────────────────────────────
+
+SEEDS = [42, 43, 44, 45, 46]
+RUNS  = []
+
+for ablation_id, emb_kwargs in ABLATIONS:
+    for s in SEEDS:
+        RUNS.append(TrainConfig(
+            **_BASE,
+            **emb_kwargs,
+            seed       = s,
+            output_dir = Path(f"experiment_outputs/Jul1_ablations/{ablation_id}/seed{s}"),
+            run_name   = f"{ablation_id}-seed{s}",
+        ))
 
 # ── run ───────────────────────────────────────────────────────────────────────
 

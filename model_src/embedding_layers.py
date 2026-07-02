@@ -49,36 +49,42 @@ class EHR_Event_Embedding(nn.Module):
     """
     Multi-level embedding for EHR event sequences.
 
-    Three embedding modes, selected by `embedding_mode`:
+    Controlled by three orthogonal flags:
 
-    "additive"  (default, BEHRT-style):
-        sum(concept, type, visit, segment, position, age_bucket)
-        No time signal.
+    fusion      "add"    (default) BEHRT-style element-wise sum of all tables.
+                "concat" CEHR-BERT/EHRMamba style: cat([concept, time*, age*, position])
+                         → Linear(4d→d) → GELU, then type/visit/segment added as residuals.
+                         Components disabled by use_time=False / use_age=False are zeroed
+                         before projection so the Linear weight shape stays constant.
+    use_time    bool  add learned sinusoidal time-gap embedding (requires dates tensor)
+    use_age     bool  add continuous-age sinusoidal embedding (requires age_years tensor)
 
-    "additive+time"  (BEHRT + CEHR-BERT time):
-        sum(concept, type, visit, segment, position, age_bucket)
-        + sinusoidal time embedding  sin((days/365.25) * w + φ)
-        Requires dates tensor.
+    In "add" mode the discrete decade-bucket age embedding is always included;
+    use_age adds a continuous sinusoidal age signal on top of it.
 
-    "concat"  (CEHR-BERT / EHRMamba style):
-        Linear( cat([concept(d), time(d), age_sinusoidal(d), position(d)]) ) → GELU
-        + type + visit + segment  (additive residuals)
-        Time and continuous age are always active in this mode.
-        Requires dates and age_years tensors.
+    Ablation grid:
+        A0  add,    use_time=F, use_age=F  — baseline
+        A1  add,    use_time=T, use_age=F  — + time gap
+        A2  add,    use_time=F, use_age=T  — + age
+        A3  add,    use_time=T, use_age=T  — + time + age
+        B0  concat, use_time=F, use_age=F  — concat fusion only
+        B1  concat, use_time=T, use_age=F  — concat + time
+        B2  concat, use_time=T, use_age=T  — CEHR-BERT/EHRMamba
+        C1/C2 — same flags, data_dir built with insert_att=True
 
     Args:
         num_concepts:         Vocabulary size.
         max_num_visits:       Visit embedding table size.
         num_event_types:      Event type categories (default 5).
-        num_age_buckets:      Decade buckets used in additive modes (default 10).
+        num_age_buckets:      Decade buckets for additive age (default 10).
         d_token_embedding:    Embedding dimension for all sub-embeddings.
         max_seq_len:          Position table size; must match tokenisation.
         padding_idx:          Concept index with zero embedding/gradient.
-        embedding_mode:       One of "additive", "additive+time", "concat".
+        fusion:               "add" or "concat".
+        use_time:             Enable sinusoidal time-gap embedding.
+        use_age:              Enable continuous-age sinusoidal embedding.
         time_scaling_factor:  Divisor for dates before sin(); default 365.25 (days→years).
     """
-
-    MODES = {"additive", "additive+time", "concat"}
 
     def __init__(
             self,
@@ -89,14 +95,18 @@ class EHR_Event_Embedding(nn.Module):
             d_token_embedding:   int   = 128,
             max_seq_len:         int   = 600,
             padding_idx:         int   = 0,
-            embedding_mode:      str   = "additive",
+            fusion:              str   = "add",
+            use_time:            bool  = False,
+            use_age:             bool  = False,
             time_scaling_factor: float = 365.25,
             ) -> None:
 
         super().__init__()
-        if embedding_mode not in self.MODES:
-            raise ValueError(f"embedding_mode must be one of {self.MODES}, got '{embedding_mode}'")
-        self.embedding_mode = embedding_mode
+        if fusion not in ("add", "concat"):
+            raise ValueError(f"fusion must be 'add' or 'concat', got '{fusion}'")
+        self.fusion   = fusion
+        self.use_time = use_time
+        self.use_age  = use_age
         d = d_token_embedding
 
         # ── shared tables (used in both modes) ───────────────────────────────
@@ -135,41 +145,38 @@ class EHR_Event_Embedding(nn.Module):
             type_ids:     (B, S) long
             visit_ids:    (B, S) long
             position_ids: (B, S) long
-            age_ids:      (B,)   long  — decade bucket; used in "additive" and "additive+time"
-            dates:        (B, S) long  — days since TIME_REFERENCE_DATE;
-                          required for "additive+time" and "concat"
-            age_years:    (B,)   float — continuous age in years;
-                          required for "concat"
+            age_ids:      (B,)   long  — decade bucket; always used in "add" fusion
+            dates:        (B, S) long  — days since TIME_REFERENCE_DATE; required if use_time=True
+            age_years:    (B,)   float — continuous age in years; required if use_age=True
         Returns:
             (B, S, d_token_embedding)
         """
         segment_ids = visit_ids % 2
+        B, S = concept_ids.shape
 
-        if self.embedding_mode == "concat":
-            if dates is None:
-                raise ValueError(
-                    "embedding_mode='concat' requires dates. "
-                    "Re-run tokenization to generate dates.pt."
-                )
-            if age_years is None:
-                raise ValueError(
-                    "embedding_mode='concat' requires age_years. "
-                    "Re-run tokenization to generate age_years.pt."
-                )
-            # Continuous age broadcast across all positions
-            age_emb = self.age_sinusoidal(age_years.unsqueeze(1))  # (B, 1, d)
-            age_emb = age_emb.expand(-1, concept_ids.size(1), -1)  # (B, S, d)
+        if self.fusion == "concat":
+            concept_emb = self.concept_embedding(concept_ids)   # (B, S, d)
+            pos_emb     = self.position_embedding(position_ids) # (B, S, d)
 
-            # CEHR-BERT / EHRMamba: concat four temporal components → project → GELU
-            fused = torch.cat([
-                self.concept_embedding(concept_ids),    # (B, S, d)
-                self.time_embedding(dates),             # (B, S, d)
-                age_emb,                                # (B, S, d)
-                self.position_embedding(position_ids),  # (B, S, d)
-            ], dim=-1)                                  # (B, S, 4d)
-            embedding = torch.nn.functional.gelu(self.proj(fused))  # (B, S, d)
+            if self.use_time:
+                if dates is None:
+                    raise ValueError("use_time=True requires dates.pt.")
+                t_emb = self.time_embedding(dates)              # (B, S, d)
+            else:
+                t_emb = torch.zeros_like(concept_emb)
 
-            # Type, visit, segment added as residuals after projection (CEHR-BERT style)
+            if self.use_age:
+                if age_years is None:
+                    raise ValueError("use_age=True requires age_years.pt.")
+                a_emb = self.age_sinusoidal(age_years.unsqueeze(1)).expand(-1, S, -1)
+            else:
+                a_emb = torch.zeros_like(concept_emb)
+
+            # cat → Linear(4d→d) → GELU; disabled components are zeroed, not dropped,
+            # so the projection weight shape is identical across all concat ablations.
+            fused = torch.cat([concept_emb, t_emb, a_emb, pos_emb], dim=-1)  # (B, S, 4d)
+            embedding = torch.nn.functional.gelu(self.proj(fused))            # (B, S, d)
+
             embedding = (
                 embedding
                 + self.type_embedding(type_ids)
@@ -177,24 +184,25 @@ class EHR_Event_Embedding(nn.Module):
                 + self.segment_embedding(segment_ids)
             )
 
-        else:
-            # "additive" and "additive+time": BEHRT-style sum
-            age_emb = self.age_embedding(age_ids).unsqueeze(1)  # (B, 1, d) → broadcasts
+        else:  # fusion == "add"
+            age_bucket = self.age_embedding(age_ids).unsqueeze(1)  # (B, 1, d) → broadcasts
             embedding = (
                 self.concept_embedding(concept_ids)
                 + self.type_embedding(type_ids)
                 + self.visit_embedding(visit_ids)
                 + self.segment_embedding(segment_ids)
                 + self.position_embedding(position_ids)
-                + age_emb
+                + age_bucket
             )
-            if self.embedding_mode == "additive+time":
+            if self.use_time:
                 if dates is None:
-                    raise ValueError(
-                        "embedding_mode='additive+time' requires dates. "
-                        "Re-run tokenization to generate dates.pt."
-                    )
+                    raise ValueError("use_time=True requires dates.pt.")
                 embedding = embedding + self.time_embedding(dates)
+            if self.use_age:
+                if age_years is None:
+                    raise ValueError("use_age=True requires age_years.pt.")
+                age_sin = self.age_sinusoidal(age_years.unsqueeze(1)).expand(-1, S, -1)
+                embedding = embedding + age_sin
 
         embedding = self.layer_norm(embedding)
         embedding = self.dropout(embedding)

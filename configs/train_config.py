@@ -34,15 +34,27 @@ class TrainConfig:
     wandb_project: str        = "mimic-cardio-oncology"
     run_name:      str | None = None   # defaults to wandb auto-generated name
 
-    # ── embedding mode ────────────────────────────────────────────────────────
-    # "additive"      BEHRT-style: sum of all embedding tables. No time signal.
-    # "additive+time" Additive sum + sinusoidal time per token (CEHR-BERT formula).
-    #                 Requires dates.pt.
-    # "concat"        CEHR-BERT / EHRMamba: cat([concept, time, age, position]) →
-    #                 Linear(4d→d) → GELU, then + type + visit + segment residuals.
-    #                 Time and continuous age are always active in this mode.
-    #                 Requires dates.pt and age_years.pt.
-    embedding_mode: str = "additive"
+    # ── embedding ablation flags ──────────────────────────────────────────────
+    # fusion    "add"    BEHRT-style: element-wise sum of all embedding tables.
+    #           "concat" CEHR-BERT style: cat([concept, time*, age*, position]) →
+    #                    Linear(4d→d) → GELU, then + type + visit + segment residuals.
+    #                    Missing components (use_time=False / use_age=False) are
+    #                    zeroed in the concat before projection.
+    # use_time  add sinusoidal time-gap embedding per token (requires dates.pt)
+    # use_age   add continuous-age sinusoidal embedding per token (requires age_years.pt)
+    #
+    # Ablation grid:
+    #   A0  fusion="add",    use_time=False, use_age=False  — baseline
+    #   A1  fusion="add",    use_time=True,  use_age=False  — + time
+    #   A2  fusion="add",    use_time=False, use_age=True   — + age
+    #   A3  fusion="add",    use_time=True,  use_age=True   — + time + age
+    #   B0  fusion="concat", use_time=False, use_age=False  — concat only
+    #   B1  fusion="concat", use_time=True,  use_age=False  — concat + time
+    #   B2  fusion="concat", use_time=True,  use_age=True   — CEHR-BERT/EHRMamba
+    #   C1/C2 — same flags but data_dir must point to an insert_att=True tokenization
+    fusion:   str  = "add"
+    use_time: bool = False
+    use_age:  bool = False
 
     # ── serialization ─────────────────────────────────────────────────────────
     def to_dict(self) -> dict:

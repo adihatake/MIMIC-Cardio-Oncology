@@ -113,6 +113,8 @@ python tokenization_src/tokenize_cli.py \
 | `--summarize` | no | off | Print summary statistics and save figures after tokenizing |
 | `--insert-att` | no | off | Insert CEHR-BERT Artificial Time Tokens (`W0`–`W3`, `M1`–`M11`, `LT`) between consecutive visits |
 | `--insert-visit-delimiters` | no | off | Wrap each visit's events with `[V_START]`/`[V_END]` tokens |
+| `--bucket-labs` | no | off | Append per-itemid quantile bucket (`_Q1`–`_Q4`) to abnormal lab tokens — changes vocab |
+| `--bucket-medications` | no | off | Append per-drug dose-tier bucket (`_Q1`–`_Q4`) to medication tokens — changes vocab |
 
 **Outputs** (`tokenization_outputs/<name>/`):
 
@@ -234,7 +236,9 @@ python model_src/train.py \
 | `--use-wandb` | off | Enable Weights & Biases experiment tracking |
 | `--wandb-project` | `mimic-cardio-oncology` | W&B project name |
 | `--run-name` | `None` | W&B run name (auto-generated if omitted) |
-| `--embedding-mode` | `additive` | Embedding combination — see table below |
+| `--fusion` | `add` | `add`: BEHRT-style element-wise sum. `concat`: CEHR-BERT concat→Linear→GELU |
+| `--use-time` | off | Add sinusoidal time-gap embedding per token (requires `dates.pt`) |
+| `--use-age` | off | Add continuous-age sinusoidal embedding (requires `age_years.pt`) |
 
 **Outputs** (`experiment_outputs/<run>/`):
 
@@ -249,40 +253,30 @@ python model_src/train.py \
 
 ## Model architecture
 
-The model is a BERT-style encoder (`EHR_Encoder`) with three embedding modes, selected by `embedding_mode` in `TrainConfig` or `--embedding-mode` on the CLI:
+The model is a BERT-style encoder (`EHR_Encoder`) controlled by three orthogonal embedding flags set in `TrainConfig` or via CLI:
 
-### Embedding modes
+### Embedding flags
 
-**`"additive"`** — BEHRT-style, default, no time signal:
-```
-sum(concept, type, visit, segment, position, age_bucket) → LayerNorm → Dropout
-```
+| Flag | Values | Effect |
+|---|---|---|
+| `fusion` | `"add"` (default) | BEHRT-style element-wise sum of all embedding tables |
+| | `"concat"` | CEHR-BERT/EHRMamba: `cat([concept, time*, age*, position]) → Linear(4d→d) → GELU`, then type/visit/segment as additive residuals. Missing components (disabled by flags below) are zeroed before projection — keeping weight shape identical across B0–B2. |
+| `use_time` | `False` (default) / `True` | Add learned sinusoidal time-gap per token: `sin((days/365.25) × w + φ)`. Requires `dates.pt`. |
+| `use_age` | `False` (default) / `True` | Add continuous-age sinusoidal per token: `sin(age_years × w + φ)`. In `"add"` mode this is added on top of the discrete decade-bucket embedding already present. Requires `age_years.pt`. |
 
-**`"additive+time"`** — additive sum plus sinusoidal time per token. Requires `dates.pt`.
-```
-sum(concept, type, visit, segment, position, age_bucket, time_sinusoidal) → LayerNorm → Dropout
-```
-Time formula: `sin((days_since_2000 / 365.25) × w + φ)` where `w` and `φ` are learned (CEHR-BERT).
+### Embedding components by configuration
 
-**`"concat"`** — CEHR-BERT / EHRMamba style. Time and continuous age always active. Requires `dates.pt` + `age_years.pt`.
-```
-Linear( cat([concept(d), time(d), age_sinusoidal(d), position(d)]) ) → GELU
-+ type + visit + segment → LayerNorm → Dropout
-```
-Age is encoded as a continuous sinusoidal on exact age in years (not decade buckets).
-
-### Embedding components
-
-| Component | `"additive"` | `"additive+time"` | `"concat"` |
-|---|---|---|---|
-| Concept | `nn.Embedding(vocab, d)` | same | in concat |
-| Type | `nn.Embedding(5, d)` | same | additive residual |
-| Visit | `nn.Embedding(max_visits, d)` | same | additive residual |
-| Segment | `nn.Embedding(2, d)`, `visit_id % 2` | same | additive residual |
-| Position | `nn.Embedding(max_seq_len, d)` | same | in concat |
-| Age | decade bucket `nn.Embedding(10, d)` | same | `sin(age_years × w + φ)`, in concat |
-| Time | — | `sin((days/365.25) × w + φ)`, additive | `sin((days/365.25) × w + φ)`, in concat |
-| Projection | — | — | `nn.Linear(4d → d)` |
+| Component | `fusion="add"` | `fusion="concat"` |
+|---|---|---|
+| Concept | additive | in concat |
+| Type | additive | additive residual |
+| Visit | additive | additive residual |
+| Segment (`visit_id % 2`) | additive | additive residual |
+| Position | additive | in concat |
+| Age (decade bucket) | additive, always | — |
+| Time (`use_time=True`) | additive | in concat (zeroed if False) |
+| Age sinusoidal (`use_age=True`) | additive | in concat (zeroed if False) |
+| Projection | — | `nn.Linear(4d → d)` |
 
 ### Encoder
 
@@ -301,22 +295,40 @@ EHR_Event_Embedding → N × TransformerEncoderLayer (pre-norm, GELU FFN) → CL
 
 ## Embedding ablations
 
-Set `embedding_mode` in `TrainConfig` or pass `--embedding-mode` on the CLI:
+### Ablation grid
 
-| `embedding_mode` | Time signal | Age encoding | Requires |
-|---|---|---|---|
-| `"additive"` | none | decade bucket | — |
-| `"additive+time"` | additive sinusoidal | decade bucket | `dates.pt` |
-| `"concat"` | inside projection | continuous sinusoidal | `dates.pt` + `age_years.pt` |
+| ID | `fusion` | `use_time` | `use_age` | Purpose |
+|---|---|---|---|---|
+| A0 | `"add"` | False | False | Baseline — no temporal info |
+| A1 | `"add"` | True | False | Does time-gap signal help? |
+| A2 | `"add"` | False | True | Does patient age help? |
+| A3 | `"add"` | True | True | Best additive temporal version |
+| B0 | `"concat"` | False | False | Tests concat fusion alone |
+| B1 | `"concat"` | True | False | Concat + time |
+| B2 | `"concat"` | True | True | CEHR-BERT/EHRMamba style |
+| C1 | best of A/B | — | — | Same flags + `insert_att=True` tokenization |
+| C2 | `"concat"` | True | True | Full CEHR-BERT (concat + time + age + ATT) |
 
-Tokenization-level ablations (set in `run_tokenization.py` / `TokenizationConfig`):
+### Tokenization requirements
+
+`dates.pt` and `age_years.pt` are **always written** by the tokenizer. No special tokenization flag is needed for A0–B2.
+
+C1/C2 require a separate tokenization built with `insert_att=True`. The `Jul1_512_att` variant is already defined in `run_tokenization.py`'s `RUNS` list — just run it:
+
+```bash
+python run_tokenization.py   # produces tokenization_outputs/Jul1_512_att
+```
+
+Then in `run_train.py`, uncomment the C-row in `ABLATIONS` and set its `data_dir` to `tokenization_outputs/Jul1_512_att`.
+
+Tokenization-level flags (set in `run_tokenization.py` / `TokenizationConfig`):
 
 | Flag | Effect |
 |---|---|
-| `insert_att=True` | ATT tokens between visits (`W0`–`W3`, `M1`–`M11`, `LT`) |
+| `insert_att=True` | ATT tokens between visits (`W0`–`W3`, `M1`–`M11`, `LT`) — needed for C1/C2 |
 | `insert_visit_delimiters=True` | `[V_START]`/`[V_END]` around each hospital visit |
-
-`dates.pt` and `age_years.pt` are always written by the tokenizer — no special flag needed.
+| `bucket_labs=True` | Append per-itemid quantile bucket (`_Q1`–`_Q4`) to abnormal lab tokens |
+| `bucket_medications=True` | Append per-drug dose-tier bucket (`_Q1`–`_Q4`) to medication tokens |
 
 ---
 
@@ -335,69 +347,73 @@ python run_cohort.py
 
 ### `run_tokenization.py`
 
-Edit `data_dir`, `cohort_name`, `output_name`, `max_seq_len`, the `run_summarize` flag, and optionally `insert_att` / `insert_visit_delimiters`, then:
+Defines multiple tokenization variants in a `RUNS` list — same pattern as `run_train.py`. Each entry is a `TokenizationConfig` with its own `output_name` and flags, producing an independent folder under `tokenization_outputs/`.
+
+```python
+_BASE = dict(
+    data_dir    = ...,
+    cohort_name = "cycle_modeling_v3",
+    max_seq_len = 512,
+    run_summarize = True,
+)
+
+RUNS = [
+    TokenizationConfig(**_BASE, output_name="Jul1_512"),                          # base
+    TokenizationConfig(**_BASE, output_name="Jul1_512_att",   insert_att=True),   # C1/C2
+    TokenizationConfig(**_BASE, output_name="Jul1_512_bucketed_labs",  bucket_labs=True),
+    TokenizationConfig(**_BASE, output_name="Jul1_512_bucketed_meds",  bucket_medications=True),
+    TokenizationConfig(**_BASE, output_name="Jul1_512_bucketed_all",   bucket_labs=True, bucket_medications=True),
+]
+```
+
+Comment out any variants you don't need, then:
 
 ```bash
 python run_tokenization.py
 ```
 
+Each run prints a header summarising its active flags before tokenizing.
+
 ### `run_train.py`
 
-The file you edit most often. Define one or more `TrainConfig` objects in the `RUNS` list — each gets its own `output_dir`. The script iterates through all of them sequentially.
+The file you edit most often. Define ablations in the `ABLATIONS` list and seeds in `SEEDS` — the script generates and runs every combination sequentially.
 
 Each `seed` value independently controls two things:
 - **Patient split** — which patients go to train / val / test (70 / 15 / 15, computed at runtime)
 - **Model initialisation** — weight init and dropout randomness
 
-**Three-ablation example:**
+**Ablation + multi-seed pattern** (current default):
 
 ```python
-RUNS = [
-    TrainConfig(
-        data_dir       = Path("tokenization_outputs/ver1"),
-        output_dir     = Path("experiment_outputs/ablation_additive"),
-        d_model        = 768, num_heads = 12, num_layers = 12, ff_dim = 3072,
-        embedding_mode = "additive",
-        run_name       = "additive",
-    ),
-    TrainConfig(
-        data_dir       = Path("tokenization_outputs/ver1"),
-        output_dir     = Path("experiment_outputs/ablation_additive_time"),
-        embedding_mode = "additive+time",   # requires dates.pt
-        run_name       = "additive+time",
-    ),
-    TrainConfig(
-        data_dir       = Path("tokenization_outputs/ver1"),
-        output_dir     = Path("experiment_outputs/ablation_concat"),
-        embedding_mode = "concat",          # requires dates.pt + age_years.pt
-        run_name       = "concat",
-    ),
+ABLATIONS = [
+    ("A0", dict(fusion="add",    use_time=False, use_age=False)),
+    ("A1", dict(fusion="add",    use_time=True,  use_age=False)),
+    ("A2", dict(fusion="add",    use_time=False, use_age=True)),
+    ("A3", dict(fusion="add",    use_time=True,  use_age=True)),
+    ("B0", dict(fusion="concat", use_time=False, use_age=False)),
+    ("B1", dict(fusion="concat", use_time=True,  use_age=False)),
+    ("B2", dict(fusion="concat", use_time=True,  use_age=True)),
 ]
-```
 
-**Multi-seed example** (repeat across seeds to estimate variance):
+SEEDS = [42, 43, 44, 45, 46]
 
-```python
-SEEDS = [42, 43, 44]
 RUNS = [
-    TrainConfig(
-        data_dir   = Path("tokenization_outputs/ver1"),
-        output_dir = Path(f"experiment_outputs/baseline_seed{s}"),
-        seed       = s,
-        run_name   = f"baseline-seed{s}",
-    )
+    TrainConfig(**_BASE, **emb_kwargs, seed=s,
+                output_dir=Path(f"experiment_outputs/Jul1_ablations/{ablation_id}/seed{s}"),
+                run_name=f"{ablation_id}-seed{s}")
+    for ablation_id, emb_kwargs in ABLATIONS
     for s in SEEDS
 ]
 ```
 
-Each seed produces a different patient split and model initialisation. Average `test_metrics.json` across seeds to report mean ± std AUROC.
+This produces 35 runs (7 ablations × 5 seeds). Average `test_metrics.json` across seeds to report mean ± std AUROC per ablation.
 
 ```bash
 python run_train.py
 ```
 
-Each run saves its own `config.json` and `test_metrics.json` to `output_dir`.  
-Set `use_wandb = True` on any config to enable Weights & Biases logging for that run.
+Each run saves its own `config.json`, `history.json`, `best_model.pt`, and `test_metrics.json` to `output_dir`.  
+Set `use_wandb = True` in `_BASE` to enable Weights & Biases logging for all runs.
 
 ### `run_pipeline.py`
 
@@ -526,7 +542,7 @@ Requires `matplotlib`: `pip install matplotlib`
 Verify individual modules without the full dataset:
 
 ```bash
-# Embedding layer (all three modes)
+# Embedding layer
 python model_src/embedding_layers.py
 
 # Encoder architecture
@@ -576,45 +592,47 @@ Or all at once:
 python run_pipeline.py
 ```
 
-### With CEHR-BERT temporal features enabled
+### Running the full embedding ablation sweep (A0–B2, 5 seeds)
+
+A0–B2 all use the same tokenization — `dates.pt` and `age_years.pt` are always written.  
+No re-tokenization needed.
 
 ```bash
-# 2. Tokenize with time features
-python tokenization_src/tokenize_cli.py \
-    --data-dir <DATA_DIR> \
-    --cohort cycle_modeling_ver2 \
-    --name ver1_cehrbert \
-    --summarize \
-    --insert-att \
-    --insert-visit-delimiters
-
-# 3a. Additive baseline (no time)
-python model_src/train.py \
-    --data-dir tokenization_outputs/ver1_cehrbert \
-    --output-dir experiment_outputs/ablation_additive \
-    --embedding-mode additive
-
-# 3b. CEHR-BERT / EHRMamba concat embedding
-python model_src/train.py \
-    --data-dir tokenization_outputs/ver1_cehrbert \
-    --output-dir experiment_outputs/ablation_concat \
-    --embedding-mode concat
+# Edit _BASE["data_dir"] in run_train.py to point at your tokenization, then:
+python run_train.py
+# Runs 35 jobs: 7 ablations × 5 seeds
+# Results: experiment_outputs/Jul1_ablations/<ID>/seed<N>/test_metrics.json
 ```
 
-Or define all three ablation configs in `run_train.py` and run:
+To run a single ablation manually (e.g. A1, seed 42):
 
 ```bash
+python model_src/train.py \
+    --data-dir tokenization_outputs/Jun30_512 \
+    --output-dir experiment_outputs/test_A1 \
+    --fusion add --use-time \
+    --seed 42 --epochs 100
+```
+
+### Running C1/C2 (requires ATT tokenization)
+
+```bash
+# 1. Build ATT tokenization (Jul1_512_att is already in run_tokenization.py's RUNS list)
+python run_tokenization.py
+
+# 2. In run_train.py: uncomment the C2 row in ABLATIONS and set data_dir="tokenization_outputs/Jul1_512_att"
 python run_train.py
 ```
 
 ### Multi-seed experiment (variance estimation)
 
 ```bash
-# After tokenizing once, train with seeds 42, 43, 44
-for SEED in 42 43 44; do
+# After tokenizing once, train with seeds 42–46
+for SEED in 42 43 44 45 46; do
     python model_src/train.py \
         --data-dir tokenization_outputs/ver1 \
-        --output-dir experiment_outputs/baseline_seed${SEED} \
+        --output-dir experiment_outputs/A0_seed${SEED} \
+        --fusion add \
         --seed ${SEED}
 done
 # Average test_metrics.json across seeds for mean ± std AUROC
