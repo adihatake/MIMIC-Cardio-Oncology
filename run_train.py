@@ -51,18 +51,19 @@ import model_src.train as train_module
 
 # ── shared hyperparameters ────────────────────────────────────────────────────
 _BASE = dict(
-    epochs       = 100,
-    batch_size   = 32,
-    lr           = 1e-4,
-    weight_decay = 1e-2,
-    d_model      = 128,
-    num_heads    = 8,
-    num_layers   = 5,
-    ff_dim       = 512,
-    dropout      = 0.5,
-    device       = "auto",
-    num_workers  = 2,
-    use_wandb    = False,
+    epochs           = 100,
+    batch_size       = 16,
+    lr               = 1e-4,
+    weight_decay     = 5e-2,
+    label_smoothing  = 0.1,
+    d_model          = 64,
+    num_heads        = 4,
+    num_layers       = 1,
+    ff_dim           = 128,
+    dropout          = 0.4,
+    device           = "auto",
+    num_workers      = 2,
+    use_wandb        = False,
 )
 
 # ── define runs ───────────────────────────────────────────────────────────────
