@@ -41,7 +41,12 @@ def _run_label(model_dir: Path, cfg: dict | None) -> str:
     return label
 
 
-def plot(model_dirs: list[Path], save_path: Path | None, dpi: int) -> None:
+def plot(
+    model_dirs: list[Path],
+    save_path: Path | None,
+    dpi: int,
+    figsize: tuple[float, float] | None = None,
+) -> None:
     try:
         import matplotlib.pyplot as plt
         import matplotlib.ticker as ticker
@@ -49,14 +54,18 @@ def plot(model_dirs: list[Path], save_path: Path | None, dpi: int) -> None:
         print("matplotlib is required.  pip install matplotlib")
         sys.exit(1)
 
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    n = len(model_dirs)
+    if figsize is None:
+        figsize = (max(16, n * 3), 7)
+
+    fig, axes = plt.subplots(1, 2, figsize=figsize)
     ax_loss, ax_auroc = axes
 
     colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
     for i, model_dir in enumerate(model_dirs):
         history = _load_history(model_dir)
-        cfg     = None
+        cfg      = None
         cfg_path = model_dir / "config.json"
         if cfg_path.exists():
             with open(cfg_path) as f:
@@ -73,8 +82,8 @@ def plot(model_dirs: list[Path], save_path: Path | None, dpi: int) -> None:
         best_epoch = max(history, key=lambda h: h["auroc"])["epoch"]
         best_auroc = max(h["auroc"] for h in history)
 
-        ax_loss.plot(epochs, train_loss, color=color, linestyle="--",
-                     alpha=0.7, label=f"{label} — train")
+        ax_loss.plot(epochs, train_loss, color=color, linestyle="--", alpha=0.7,
+                     label=f"{label} — train")
         ax_loss.plot(epochs, val_loss,   color=color, linestyle="-",
                      label=f"{label} — val")
 
@@ -86,21 +95,34 @@ def plot(model_dirs: list[Path], save_path: Path | None, dpi: int) -> None:
     ax_loss.set_title("Loss", fontsize=13, fontweight="bold")
     ax_loss.set_xlabel("Epoch")
     ax_loss.set_ylabel("Cross-entropy loss")
-    ax_loss.legend(fontsize=8)
     ax_loss.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
     ax_loss.grid(alpha=0.3)
+    # Legend below the subplot; ncol spreads entries horizontally
+    ax_loss.legend(
+        fontsize=8, loc="upper center",
+        bbox_to_anchor=(0.5, -0.18),
+        ncol=max(1, min(4, n)),
+        borderaxespad=0, frameon=True,
+    )
 
     # ── AUROC axes ────────────────────────────────────────────────────────────
     ax_auroc.set_title("Validation AUROC", fontsize=13, fontweight="bold")
     ax_auroc.set_xlabel("Epoch")
     ax_auroc.set_ylabel("AUROC")
     ax_auroc.set_ylim(0, 1)
-    ax_auroc.axhline(0.5, color="gray", linestyle="--", linewidth=0.8, label="random")
-    ax_auroc.legend(fontsize=8)
+    ax_auroc.axhline(0.5, color="gray", linestyle="--", linewidth=0.8, label="random (0.5)")
     ax_auroc.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
     ax_auroc.grid(alpha=0.3)
+    ax_auroc.legend(
+        fontsize=8, loc="upper center",
+        bbox_to_anchor=(0.5, -0.18),
+        ncol=max(1, min(3, n + 1)),
+        borderaxespad=0, frameon=True,
+    )
 
+    # Leave room below each subplot for the legends
     fig.tight_layout()
+    fig.subplots_adjust(bottom=0.28)
 
     if save_path:
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
@@ -123,6 +145,11 @@ def parse_args() -> argparse.Namespace:
                         "If omitted, the plot is displayed interactively.")
     p.add_argument("--dpi",   type=int, default=150,
                    help="Output DPI when saving.")
+    p.add_argument(
+        "--figsize", nargs=2, type=float, metavar=("W", "H"), default=None,
+        help="Figure width and height in inches (e.g. --figsize 20 8). "
+             "Auto-scales by number of runs if omitted.",
+    )
     return p.parse_args()
 
 
@@ -130,7 +157,8 @@ def main() -> None:
     args       = parse_args()
     model_dirs = [Path(d) for d in args.model_dir]
     save_path  = Path(args.save) if args.save else None
-    plot(model_dirs, save_path, args.dpi)
+    figsize    = tuple(args.figsize) if args.figsize else None
+    plot(model_dirs, save_path, args.dpi, figsize=figsize)
 
 
 if __name__ == "__main__":
