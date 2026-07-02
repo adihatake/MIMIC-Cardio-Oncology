@@ -66,11 +66,38 @@ _BASE = dict(
     use_wandb    = False,
 )
 
+<<<<<<< HEAD
 # ── stage 1: bucketing comparison (A0 baseline on unbucketed vs bucketed) ─────
 # Goal: decide whether bucketed labs/meds improves performance before running
 # the full embedding ablation sweep.
 # Once done, compare with:
 #   python evaluation/compare_ablations.py experiment_outputs/Jul1_bucket_comparison/ --sort auroc
+=======
+# ── define runs ───────────────────────────────────────────────────────────────
+
+SEEDS = [42, 43, 44, 45, 46]
+RUNS  = []
+
+RUNS += [TrainConfig(**_BASE,
+                     seed           = s,
+                     output_dir     = Path(f"experiment_outputs/Jun30_512_revised/baseline/seed{s}"),
+                     embedding_mode = "additive")
+         for s in SEEDS]
+
+RUNS += [TrainConfig(**_BASE,
+                     seed           = s,
+                     output_dir     = Path(f"experiment_outputs/Jun30_512_revised/baseline_time/seed{s}"),
+                     embedding_mode = "additive+time")
+         for s in SEEDS]
+
+RUNS += [TrainConfig(**_BASE,
+                     seed           = s,
+                     output_dir     = Path(f"experiment_outputs/Jun30_512_revised/concat_sinusoid/seed{s}"),
+                     embedding_mode = "concat")
+         for s in SEEDS]
+
+# ── define runs ───────────────────────────────────────────────────────────────
+>>>>>>> 48f4d0d (resolving merge conflicts)
 
 SEEDS = [42, 43, 44, 45, 46]
 RUNS  = []
