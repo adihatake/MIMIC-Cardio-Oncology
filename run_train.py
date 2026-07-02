@@ -51,7 +51,7 @@ import model_src.train as train_module
 
 # ── shared hyperparameters ────────────────────────────────────────────────────
 _BASE = dict(
-    data_dir     = Path("tokenization_outputs/Jun30_512"),
+    data_dir     = Path("tokenization_outputs/Jul1_512"),
     epochs       = 100,
     batch_size   = 16,
     lr           = 1e-4,
@@ -66,37 +66,57 @@ _BASE = dict(
     use_wandb    = False,
 )
 
-# ── ablation definitions ──────────────────────────────────────────────────────
-# Each entry: (ablation_id, embedding kwargs)
-# C1/C2 require a separate data_dir built with insert_att=True — uncomment and
-# set data_dir once that tokenization exists.
-
-ABLATIONS = [
-    ("A0", dict(fusion="add",    use_time=False, use_age=False)),
-    ("A1", dict(fusion="add",    use_time=True,  use_age=False)),
-    ("A2", dict(fusion="add",    use_time=False, use_age=True)),
-    ("A3", dict(fusion="add",    use_time=True,  use_age=True)),
-    ("B0", dict(fusion="concat", use_time=False, use_age=False)),
-    ("B1", dict(fusion="concat", use_time=True,  use_age=False)),
-    ("B2", dict(fusion="concat", use_time=True,  use_age=True)),
-    # C1 / C2: uncomment after building an insert_att=True tokenization
-    # ("C2", dict(fusion="concat", use_time=True,  use_age=True)),
-]
-
-# ── define runs ───────────────────────────────────────────────────────────────
+# ── stage 1: bucketing comparison (A0 baseline on unbucketed vs bucketed) ─────
+# Goal: decide whether bucketed labs/meds improves performance before running
+# the full embedding ablation sweep.
+# Once done, compare with:
+#   python evaluation/compare_ablations.py experiment_outputs/Jul1_bucket_comparison/ --sort auroc
 
 SEEDS = [42, 43, 44, 45, 46]
 RUNS  = []
 
-for ablation_id, emb_kwargs in ABLATIONS:
-    for s in SEEDS:
-        RUNS.append(TrainConfig(
-            **_BASE,
-            **emb_kwargs,
-            seed       = s,
-            output_dir = Path(f"experiment_outputs/Jul1_ablations/{ablation_id}/seed{s}"),
-            run_name   = f"{ablation_id}-seed{s}",
-        ))
+for s in SEEDS:
+    # Unbucketed baseline
+    RUNS.append(TrainConfig(
+        **_BASE,
+        data_dir   = Path("tokenization_outputs/Jul1_512"),
+        seed       = s,
+        output_dir = Path(f"experiment_outputs/Jul1_bucket_comparison/unbucketed/seed{s}"),
+        run_name   = f"unbucketed-seed{s}",
+    ))
+    # Bucketed baseline (labs + medications)
+    RUNS.append(TrainConfig(
+        **_BASE,
+        data_dir   = Path("tokenization_outputs/Jul1_512_bucketed_all"),
+        seed       = s,
+        output_dir = Path(f"experiment_outputs/Jul1_bucket_comparison/bucketed/seed{s}"),
+        run_name   = f"bucketed-seed{s}",
+    ))
+
+# ── stage 2: full embedding ablation sweep (uncomment after picking tokenization) ──
+# Replace <CHOSEN_TOKENIZATION> with either "Jul1_512" or "Jul1_512_bucketed_all".
+#
+# ABLATIONS = [
+#     ("A0", dict(fusion="add",    use_time=False, use_age=False)),
+#     ("A1", dict(fusion="add",    use_time=True,  use_age=False)),
+#     ("A2", dict(fusion="add",    use_time=False, use_age=True)),
+#     ("A3", dict(fusion="add",    use_time=True,  use_age=True)),
+#     ("B0", dict(fusion="concat", use_time=False, use_age=False)),
+#     ("B1", dict(fusion="concat", use_time=True,  use_age=False)),
+#     ("B2", dict(fusion="concat", use_time=True,  use_age=True)),
+#     # C1/C2: requires Jul1_512_att tokenization
+#     # ("C2", dict(fusion="concat", use_time=True, use_age=True)),
+# ]
+# for ablation_id, emb_kwargs in ABLATIONS:
+#     for s in SEEDS:
+#         RUNS.append(TrainConfig(
+#             **_BASE,
+#             **emb_kwargs,
+#             data_dir   = Path("tokenization_outputs/<CHOSEN_TOKENIZATION>"),
+#             seed       = s,
+#             output_dir = Path(f"experiment_outputs/Jul1_ablations/{ablation_id}/seed{s}"),
+#             run_name   = f"{ablation_id}-seed{s}",
+#         ))
 
 # ── run ───────────────────────────────────────────────────────────────────────
 
