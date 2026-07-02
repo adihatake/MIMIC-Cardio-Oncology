@@ -150,7 +150,6 @@ def train(args: argparse.Namespace | object) -> None:
     )
     print(f"Train batches: {len(train_dl)}  |  Val batches: {len(val_dl)}  |  Test batches: {len(test_dl)}")
 
-    embedding_mode = getattr(args, "embedding_mode", "additive")
     model = EHR_Encoder(
         num_concepts=num_concepts,
         max_num_visits=max_num_visits,
@@ -160,7 +159,9 @@ def train(args: argparse.Namespace | object) -> None:
         ff_dim=args.ff_dim,
         dropout=args.dropout,
         max_seq_len=max_seq_len,
-        embedding_mode=embedding_mode,
+        fusion=getattr(args, "fusion", "add"),
+        use_time=getattr(args, "use_time", False),
+        use_age=getattr(args, "use_age", False),
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -319,14 +320,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--wandb-project",      default="mimic-cardio-oncology", dest="wandb_project")
     p.add_argument("--run-name",           default=None, dest="run_name",
                    help="W&B run name (defaults to auto-generated).")
-    p.add_argument("--embedding-mode", default="additive", dest="embedding_mode",
-                   choices=["additive", "additive+time", "concat"],
-                   help=(
-                       "'additive': BEHRT-style sum, no time. "
-                       "'additive+time': sum + sinusoidal time (requires dates.pt). "
-                       "'concat': CEHR-BERT/EHRMamba concat→FC→GELU, time+age always active "
-                       "(requires dates.pt + age_years.pt)."
-                   ))
+    p.add_argument("--fusion",    default="add", choices=["add", "concat"],
+                   help="'add': BEHRT-style element-wise sum. 'concat': CEHR-BERT concat→Linear→GELU.")
+    p.add_argument("--use-time", action="store_true", dest="use_time",
+                   help="Add sinusoidal time-gap embedding per token (requires dates.pt).")
+    p.add_argument("--use-age",  action="store_true", dest="use_age",
+                   help="Add continuous-age sinusoidal embedding (requires age_years.pt).")
     return p.parse_args()
 
 

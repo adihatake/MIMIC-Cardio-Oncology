@@ -85,7 +85,9 @@ def _load_model(model_dir: Path, device: torch.device) -> tuple[EHR_Encoder, dic
         ff_dim         = cfg["ff_dim"],
         dropout        = cfg.get("dropout", 0.1),
         max_seq_len    = cfg["max_seq_len"],
-        embedding_mode = cfg.get("embedding_mode", "additive"),
+        fusion   = cfg.get("fusion",   "add"),
+        use_time = cfg.get("use_time", False),
+        use_age  = cfg.get("use_age",  False),
     ).to(device)
 
     ckpt = model_dir / "best_model.pt"
