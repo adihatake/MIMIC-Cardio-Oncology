@@ -12,10 +12,11 @@ class TrainConfig:
     output_dir: Path = Path("model_outputs/run1")
 
     # ── training loop ─────────────────────────────────────────────────────────
-    epochs:       int   = 20
-    batch_size:   int   = 32
-    lr:           float = 1e-4
-    weight_decay: float = 1e-2
+    epochs:          int   = 20
+    batch_size:      int   = 32
+    lr:              float = 1e-4
+    weight_decay:    float = 1e-2
+    label_smoothing: float = 0.0
 
     # ── model architecture ────────────────────────────────────────────────────
     d_model:    int   = 128
