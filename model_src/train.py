@@ -167,7 +167,10 @@ def train(args: argparse.Namespace | object) -> None:
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameters   : {n_params:,}")
 
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    criterion = nn.CrossEntropyLoss(
+        weight=class_weights,
+        label_smoothing=getattr(args, "label_smoothing", 0.0),
+    )
     optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay) ## Need to adjust/experiment with
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr / 10) ## Need to adjust/experiment with
     scaler    = GradScaler("cuda", enabled=device.type == "cuda")
@@ -320,6 +323,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--wandb-project",      default="mimic-cardio-oncology", dest="wandb_project")
     p.add_argument("--run-name",           default=None, dest="run_name",
                    help="W&B run name (defaults to auto-generated).")
+    p.add_argument("--label-smoothing", type=float, default=0.0, dest="label_smoothing",
+                   help="Label smoothing for CrossEntropyLoss (0 = off, 0.1 recommended for small datasets).")
     p.add_argument("--fusion",    default="add", choices=["add", "concat"],
                    help="'add': BEHRT-style element-wise sum. 'concat': CEHR-BERT concat→Linear→GELU.")
     p.add_argument("--use-time", action="store_true", dest="use_time",

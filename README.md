@@ -225,10 +225,11 @@ python model_src/train.py \
 | `--batch-size` | `32` | Training batch size |
 | `--lr` | `1e-4` | AdamW learning rate |
 | `--weight-decay` | `1e-2` | AdamW weight decay |
+| `--label-smoothing` | `0.0` | Label smoothing for CrossEntropyLoss (`0.1` recommended for small datasets) |
 | `--d-model` | `128` | Embedding / hidden dimension |
-| `--num-heads` | `4` | Attention heads (must divide `d-model`) |
-| `--num-layers` | `4` | Number of TransformerEncoder layers |
-| `--ff-dim` | `512` | Feed-forward inner dimension |
+| `--num-heads` | `8` | Attention heads (must divide `d-model`) |
+| `--num-layers` | `2` | Number of TransformerEncoder layers |
+| `--ff-dim` | `256` | Feed-forward inner dimension |
 | `--dropout` | `0.1` | Dropout probability |
 | `--num-workers` | `0` | DataLoader worker processes |
 | `--device` | `auto` | `auto`, `cpu`, `cuda`, or `mps` |
@@ -286,10 +287,24 @@ EHR_Event_Embedding → N × TransformerEncoderLayer (pre-norm, GELU FFN) → CL
 
 - Optimizer: AdamW
 - Scheduler: CosineAnnealingLR (`T_max=epochs`, `eta_min=lr/10`)
-- Loss: CrossEntropyLoss with inverse-frequency class weights
+- Loss: CrossEntropyLoss with inverse-frequency class weights + optional label smoothing
 - Mixed precision: `torch.amp.autocast` + `GradScaler` (CUDA only)
 - Gradient clipping: `max_norm=1.0`
 - Best checkpoint saved by validation AUROC
+
+### Regularization settings (`run_train.py` defaults)
+
+The dataset is small (~1,800 training samples), so regularization is more aggressive than the original CEHR-BERT paper. Architecture is matched to CEHR-BERT (`d_model=128`, 8 heads) but with fewer layers and tighter regularization:
+
+| Setting | Value | Notes |
+|---|---|---|
+| `num_layers` | 2 | CEHR-BERT uses 5; reduced for dataset size |
+| `ff_dim` | 256 | 2× `d_model`; CEHR-BERT uses 4× |
+| `dropout` | 0.4 | Applied at embedding, attention, FFN, and CLS |
+| `weight_decay` | 5e-2 | L2 penalty via AdamW |
+| `label_smoothing` | 0.1 | Prevents overconfident predictions on small data |
+
+If val loss diverges from train loss, reduce `num_layers` to 1 or `d_model` to 64 before increasing dropout further.
 
 ---
 
