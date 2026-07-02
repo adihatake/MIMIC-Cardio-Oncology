@@ -515,6 +515,44 @@ Reports: AUROC, accuracy, precision, recall, F1, confusion matrix, and a per-sam
 | `--max-rows` | `50` | Max rows shown in the per-sample table |
 | `--output-csv` | — | Optional path to save full per-sample results |
 
+### `evaluation/compare_ablations.py`
+
+Scans an experiment directory for all `test_metrics.json` files, groups them by ablation ID, and reports mean ± std AUROC across seeds. Also produces a bar chart with error bars.
+
+```bash
+# Print summary table
+python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/
+
+# Save bar chart
+python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/ \
+    --save experiment_outputs/Jul1_ablations/comparison.png
+
+# Sort by mean AUROC instead of ablation name
+python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/ --sort auroc
+
+# Table only, no plot
+python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/ --no-plot
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `root` | required | Root experiment directory containing `<ablation>/<seed>/test_metrics.json` |
+| `--save` | — | Save bar chart to this path (PNG/PDF). Omit to display interactively |
+| `--sort` | `id` | Sort rows by `id` (ablation name) or `auroc` (best first) |
+| `--no-plot` | off | Print table only, skip the bar chart |
+| `--dpi` | `150` | Output DPI when saving |
+
+Expected directory layout:
+```
+experiment_outputs/Jul1_ablations/
+  A0/seed42/test_metrics.json
+  A0/seed43/test_metrics.json
+  A1/seed42/test_metrics.json
+  ...
+```
+
+---
+
 ### `evaluation/plot_history.py`
 
 Plots training loss and validation AUROC curves from `history.json`. Supports comparing multiple runs side by side.
