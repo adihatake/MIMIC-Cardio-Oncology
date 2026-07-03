@@ -27,11 +27,9 @@ rich
 # ── Mamba SSM (required for run_mamba.py, CUDA-only) ─────────────────────────
 # Official implementation from github.com/state-spaces/mamba.
 # Will NOT install on CPU-only machines or Apple Silicon (MPS) — requires CUDA.
+# Remember to load python 3.12.5 and the CUDA 12.6 module and run no-build-isolation
 # Install separately on your cluster AFTER torch:
-#   pip install causal-conv1d mamba-ssm
-#
-# causal-conv1d>=1.4.0
-# mamba-ssm>=2.2.0
+#   pip install mamba-ssm --no-build-isolation
 
 # ── Waveform / audio processing (uncomment if needed) ────────────────────────
 # wfdb==4.3.1
