@@ -42,6 +42,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from model_src.dataset import get_dataloaders
 from model_src.ehr_encoder import EHR_Encoder
+from model_src.ehr_mamba import EHR_Mamba
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -150,19 +151,37 @@ def train(args: argparse.Namespace | object) -> None:
     )
     print(f"Train batches: {len(train_dl)}  |  Val batches: {len(val_dl)}  |  Test batches: {len(test_dl)}")
 
-    model = EHR_Encoder(
-        num_concepts=num_concepts,
-        max_num_visits=max_num_visits,
-        d_model=args.d_model,
-        num_heads=args.num_heads,
-        num_layers=args.num_layers,
-        ff_dim=args.ff_dim,
-        dropout=args.dropout,
-        max_seq_len=max_seq_len,
-        fusion=getattr(args, "fusion", "add"),
-        use_time=getattr(args, "use_time", False),
-        use_age=getattr(args, "use_age", False),
-    ).to(device)
+    model_type = getattr(args, "model_type", "transformer")
+    if model_type == "mamba":
+        model = EHR_Mamba(
+            num_concepts=num_concepts,
+            max_num_visits=max_num_visits,
+            d_model=args.d_model,
+            num_layers=args.num_layers,
+            d_state=getattr(args, "d_state", 16),
+            d_conv=getattr(args, "d_conv", 4),
+            d_expand=getattr(args, "d_expand", 2),
+            dropout=args.dropout,
+            max_seq_len=max_seq_len,
+            fusion=getattr(args, "fusion", "add"),
+            use_time=getattr(args, "use_time", False),
+            use_age=getattr(args, "use_age", False),
+            bidirectional=getattr(args, "bidirectional", True),
+        ).to(device)
+    else:
+        model = EHR_Encoder(
+            num_concepts=num_concepts,
+            max_num_visits=max_num_visits,
+            d_model=args.d_model,
+            num_heads=args.num_heads,
+            num_layers=args.num_layers,
+            ff_dim=args.ff_dim,
+            dropout=args.dropout,
+            max_seq_len=max_seq_len,
+            fusion=getattr(args, "fusion", "add"),
+            use_time=getattr(args, "use_time", False),
+            use_age=getattr(args, "use_age", False),
+        ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameters   : {n_params:,}")
@@ -331,6 +350,23 @@ def parse_args() -> argparse.Namespace:
                    help="Add sinusoidal time-gap embedding per token (requires dates.pt).")
     p.add_argument("--use-age",  action="store_true", dest="use_age",
                    help="Add continuous-age sinusoidal embedding (requires age_years.pt).")
+
+    # ── model selection ───────────────────────────────────────────────────────
+    p.add_argument("--model-type", default="transformer", choices=["transformer", "mamba"],
+                   dest="model_type",
+                   help="'transformer': EHR_Encoder (BERT-style). 'mamba': Mamba encoder (bidirectional SSM).")
+
+    # ── mamba-specific hyperparameters ────────────────────────────────────────
+    p.add_argument("--d-state",  type=int, default=16, dest="d_state",
+                   help="SSM latent state size N. Mamba only. (default: 16)")
+    p.add_argument("--d-conv",   type=int, default=4,  dest="d_conv",
+                   help="Depthwise Conv1d kernel width. Mamba only. (default: 4)")
+    p.add_argument("--d-expand", type=int, default=2,  dest="d_expand",
+                   help="Inner-dim multiplier; d_inner = d_expand * d_model. Mamba only. (default: 2)")
+    p.add_argument("--no-bidirectional", action="store_false", dest="bidirectional",
+                   help="Use causal (unidirectional) Mamba instead of bidirectional.")
+    p.set_defaults(bidirectional=True)
+
     return p.parse_args()
 
 

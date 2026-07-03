@@ -199,7 +199,16 @@ Omit the path argument to use the default (`tokenization_outputs/ver1`).
 
 ## Step 4 — Train
 
-Trains the BERT-style EHR encoder. The patient split (70 / 15 / 15) is computed at runtime from `samples.parquet` using `--seed`, so no separate split step is needed. The same seed also controls weight initialisation, making each run fully reproducible.
+Two model architectures are available, selected via `model_type`:
+
+| `model_type` | Class | Complexity | File |
+|---|---|---|---|
+| `"transformer"` (default) | `EHR_Encoder` | O(L²) attention | `model_src/ehr_encoder.py` |
+| `"mamba"` | `EHR_Mamba` | O(L) SSM recurrence | `model_src/ehr_mamba.py` |
+
+Both share the same `EHR_Event_Embedding` layer and the same ablation flags (`fusion`, `use_time`, `use_age`). `model_type="mamba"` requires CUDA and `mamba-ssm` installed (see `requirements.txt`).
+
+Trains the encoder on the tokenized EHR sequences. The patient split (70 / 15 / 15) is computed at runtime from `samples.parquet` using `--seed`, so no separate split step is needed. The same seed also controls weight initialisation, making each run fully reproducible.
 
 ```bash
 python model_src/train.py \
@@ -254,14 +263,45 @@ python model_src/train.py \
 
 ## Model architecture
 
-The model is a BERT-style encoder (`EHR_Encoder`) controlled by three orthogonal embedding flags set in `TrainConfig` or via CLI:
+Two encoders are available, both sharing the same `EHR_Event_Embedding` layer and producing `(B, 2)` logits for binary cardiotoxicity prediction.
+
+### Transformer encoder (`model_type="transformer"`, default)
+
+```
+EHR_Event_Embedding → N × TransformerEncoderLayer (pre-norm, GELU FFN) → CLS pooling → Linear(d → 2)
+```
+
+Self-attention gives every token access to every other token (O(L²)).
+
+### Mamba encoder (`model_type="mamba"`)
+
+```
+EHR_Event_Embedding → N × BiMambaBlock (fwd SSM + bwd SSM + merge) → CLS pooling → Linear(d → 2)
+```
+
+`BiMambaBlock` runs two `mamba_ssm.Mamba` instances in opposite directions and merges their outputs, giving full left- and right-context at each position with O(L) recurrence rather than O(L²) attention. Uses the official implementation from [github.com/state-spaces/mamba](https://github.com/state-spaces/mamba).
+
+**Mamba-specific hyperparameters** (in addition to `d_model`, `num_layers`, `dropout`):
+
+| Param | Default | Description |
+|---|---|---|
+| `d_state` | `16` | SSM latent state size N — controls memory capacity |
+| `d_conv` | `4` | Depthwise Conv1d kernel width (local context before SSM) |
+| `d_expand` | `2` | Inner-dim multiplier: `d_inner = d_expand × d_model` |
+| `bidirectional` | `True` | `True` → BiMambaBlock (recommended); `False` → causal scan |
+
+**Requires CUDA:** `pip install causal-conv1d mamba-ssm` (see `requirements.txt`).
+
+---
+
+The model is controlled by three orthogonal embedding flags set in `TrainConfig` or via CLI:
 
 ### Embedding flags
 
 | Flag | Values | Effect |
 |---|---|---|
 | `fusion` | `"add"` (default) | BEHRT-style element-wise sum of all embedding tables |
-| | `"concat"` | CEHR-BERT/EHRMamba: `cat([concept, time*, age*, position]) → Linear(4d→d) → GELU`, then type/visit/segment as additive residuals. Missing components (disabled by flags below) are zeroed before projection — keeping weight shape identical across B0–B2. |
+| | `"concat"` | CEHR-BERT: `cat([concept, time*, age*, position]) → Linear(4d→d) → GELU`, then type/visit/segment as additive residuals. Missing components (disabled by flags below) are zeroed before projection — keeping weight shape identical across B0–B2. |
 | `use_time` | `False` (default) / `True` | Add learned sinusoidal time-gap per token: `sin((days/365.25) × w + φ)`. Requires `dates.pt`. |
 | `use_age` | `False` (default) / `True` | Add continuous-age sinusoidal per token: `sin(age_years × w + φ)`. In `"add"` mode this is added on top of the discrete decade-bucket embedding already present. Requires `age_years.pt`. |
 
@@ -320,7 +360,7 @@ If val loss diverges from train loss, reduce `num_layers` to 1 or `d_model` to 6
 | A3 | `"add"` | True | True | Best additive temporal version |
 | B0 | `"concat"` | False | False | Tests concat fusion alone |
 | B1 | `"concat"` | True | False | Concat + time |
-| B2 | `"concat"` | True | True | CEHR-BERT/EHRMamba style |
+| B2 | `"concat"` | True | True | CEHR-BERT style |
 | C1 | best of A/B | — | — | Same flags + `insert_att=True` tokenization |
 | C2 | `"concat"` | True | True | Full CEHR-BERT (concat + time + age + ATT) |
 
@@ -388,6 +428,16 @@ python run_tokenization.py
 ```
 
 Each run prints a header summarising its active flags before tokenizing.
+
+### `run_mamba.py`
+
+Mirror of `run_train.py` for the Mamba encoder. Edit `_BASE` and the `RUNS` list, then:
+
+```bash
+python run_mamba.py
+```
+
+Requires CUDA + `pip install causal-conv1d mamba-ssm`. The same embedding ablation grid (A0–B2) applies — see `run_train.py` for the pattern.
 
 ### `run_train.py`
 
@@ -598,8 +648,11 @@ Verify individual modules without the full dataset:
 # Embedding layer
 python model_src/embedding_layers.py
 
-# Encoder architecture
+# Transformer encoder architecture
 python model_src/ehr_encoder.py
+
+# Mamba encoder architecture (requires CUDA + mamba-ssm)
+python model_src/ehr_mamba.py
 
 # Dataset / DataLoader (requires tokenization_outputs/ver1)
 python model_src/dataset.py tokenization_outputs/ver1

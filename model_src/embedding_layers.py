@@ -52,7 +52,7 @@ class EHR_Event_Embedding(nn.Module):
     Controlled by three orthogonal flags:
 
     fusion      "add"    (default) BEHRT-style element-wise sum of all tables.
-                "concat" CEHR-BERT/EHRMamba style: cat([concept, time*, age*, position])
+                "concat" CEHR-BERT style: cat([concept, time*, age*, position])
                          → Linear(4d→d) → GELU, then type/visit/segment added as residuals.
                          Components disabled by use_time=False / use_age=False are zeroed
                          before projection so the Linear weight shape stays constant.
@@ -69,7 +69,7 @@ class EHR_Event_Embedding(nn.Module):
         A3  add,    use_time=T, use_age=T  — + time + age
         B0  concat, use_time=F, use_age=F  — concat fusion only
         B1  concat, use_time=T, use_age=F  — concat + time
-        B2  concat, use_time=T, use_age=T  — CEHR-BERT/EHRMamba
+        B2  concat, use_time=T, use_age=T  — CEHR-BERT
         C1/C2 — same flags, data_dir built with insert_att=True
 
     Args:
