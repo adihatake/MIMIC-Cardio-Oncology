@@ -60,7 +60,7 @@ _BASE = dict(
     num_heads        = 4,
     num_layers       = 1,
     ff_dim           = 128,
-    dropout          = 0.4,
+    dropout          = 0.3,
     device           = "auto",
     num_workers      = 2,
     use_wandb        = False,
@@ -72,45 +72,12 @@ SEEDS = [42, 43, 44]
 RUNS  = []
 
 for s in SEEDS:
-    # Unbucketed baseline
     RUNS.append(TrainConfig(
         **_BASE,
         data_dir   = Path("tokenization_outputs/Jul1_512"),
         seed       = s,
-        output_dir = Path(f"experiment_outputs/Jul1_dropout_comparison/unbucketed/seed{s}"),
+        output_dir = Path(f"experiment_outputs/test_1/unbucketed/seed{s}"),
     ))
-    # Bucketed baseline (labs + medications)
-    RUNS.append(TrainConfig(
-        **_BASE,
-        data_dir   = Path("tokenization_outputs/Jul1_512_bucketed_all"),
-        seed       = s,
-        output_dir = Path(f"experiment_outputs/Jul1_dropout_comparison/bucketed/seed{s}_b"),
-    ))
-
-# ── stage 2: full embedding ablation sweep (uncomment after picking tokenization) ──
-# Replace <CHOSEN_TOKENIZATION> with either "Jul1_512" or "Jul1_512_bucketed_all".
-#
-# ABLATIONS = [
-#     ("A0", dict(fusion="add",    use_time=False, use_age=False)),
-#     ("A1", dict(fusion="add",    use_time=True,  use_age=False)),
-#     ("A2", dict(fusion="add",    use_time=False, use_age=True)),
-#     ("A3", dict(fusion="add",    use_time=True,  use_age=True)),
-#     ("B0", dict(fusion="concat", use_time=False, use_age=False)),
-#     ("B1", dict(fusion="concat", use_time=True,  use_age=False)),
-#     ("B2", dict(fusion="concat", use_time=True,  use_age=True)),
-#     # C1/C2: requires Jul1_512_att tokenization
-#     # ("C2", dict(fusion="concat", use_time=True, use_age=True)),
-# ]
-# for ablation_id, emb_kwargs in ABLATIONS:
-#     for s in SEEDS:
-#         RUNS.append(TrainConfig(
-#             **_BASE,
-#             **emb_kwargs,
-#             data_dir   = Path("tokenization_outputs/<CHOSEN_TOKENIZATION>"),
-#             seed       = s,
-#             output_dir = Path(f"experiment_outputs/Jul1_ablations/{ablation_id}/seed{s}"),
-#             run_name   = f"{ablation_id}-seed{s}",
-#         ))
 
 # ── run ───────────────────────────────────────────────────────────────────────
 
