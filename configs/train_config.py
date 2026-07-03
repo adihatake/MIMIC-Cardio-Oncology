@@ -18,12 +18,28 @@ class TrainConfig:
     weight_decay:    float = 1e-2
     label_smoothing: float = 0.0
 
-    # ── model architecture ────────────────────────────────────────────────────
+    # ── model selection ───────────────────────────────────────────────────────
+    # "transformer" → EHR_Encoder   (BERT-style, O(L²) attention)
+    # "mamba"       → EHR_Mamba     (bidirectional SSM, O(L) recurrence)
+    model_type: str = "transformer"
+
+    # ── transformer architecture ──────────────────────────────────────────────
     d_model:    int   = 128
     num_heads:  int   = 4
     num_layers: int   = 4
     ff_dim:     int   = 512
     dropout:    float = 0.1
+
+    # ── mamba-specific architecture ───────────────────────────────────────────
+    # d_state:       SSM latent state size N (typical: 16)
+    # d_conv:        depthwise Conv1d kernel width (typical: 4)
+    # d_expand:      d_inner = d_expand * d_model (typical: 2)
+    # bidirectional: True → BiMambaBlock (full context); False → causal scan
+    # Requires CUDA + mamba-ssm: pip install causal-conv1d mamba-ssm
+    d_state:       int  = 16
+    d_conv:        int  = 4
+    d_expand:      int  = 2
+    bidirectional: bool = True
 
     # ── runtime ───────────────────────────────────────────────────────────────
     num_workers: int = 0
@@ -51,7 +67,7 @@ class TrainConfig:
     #   A3  fusion="add",    use_time=True,  use_age=True   — + time + age
     #   B0  fusion="concat", use_time=False, use_age=False  — concat only
     #   B1  fusion="concat", use_time=True,  use_age=False  — concat + time
-    #   B2  fusion="concat", use_time=True,  use_age=True   — CEHR-BERT/EHRMamba
+    #   B2  fusion="concat", use_time=True,  use_age=True   — CEHR-BERT
     #   C1/C2 — same flags but data_dir must point to an insert_att=True tokenization
     fusion:   str  = "add"
     use_time: bool = False
