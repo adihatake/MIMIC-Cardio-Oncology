@@ -41,7 +41,7 @@ Requires CUDA + mamba-ssm (install once on your cluster before running):
 from pathlib import Path
 
 from configs import TrainConfig
-import model_src.train as train_module
+import model_src.mamba_train as train_module
 
 # ── shared hyperparameters ────────────────────────────────────────────────────
 _BASE = dict(

@@ -1,20 +1,18 @@
 """
-train.py
+mamba_train.py
 
-One training run for the EHR_Encoder (Transformer) cardiotoxicity classifier.
-
-Reads tokenized tensors and splits from a tokenization_outputs/<name>/ directory,
-trains with cross-entropy loss (class-weighted for imbalance), evaluates on the
-validation set each epoch, and saves the best checkpoint by validation AUROC.
-
-For the Mamba model use mamba_train.py / run_mamba.py instead.
+Training loop for EHR_Mamba — Mamba-only mirror of train.py.
+Always instantiates EHR_Mamba; no model_type branching.
 
 Usage:
-    python model_src/train.py --data-dir tokenization_outputs/ver1
+    python model_src/mamba_train.py --data-dir tokenization_outputs/Jul1_512
 
-    # smaller/faster config for debugging:
-    python model_src/train.py --data-dir tokenization_outputs/ver1 \\
-        --d-model 64 --num-heads 4 --num-layers 2 --epochs 3 --batch-size 16
+    # quick smoke run:
+    python model_src/mamba_train.py --data-dir tokenization_outputs/Jul1_512 \\
+        --d-model 64 --num-layers 2 --epochs 3 --batch-size 16
+
+Requires CUDA + mamba-ssm:
+    pip install --no-build-isolation causal-conv1d mamba-ssm
 """
 
 from __future__ import annotations
@@ -43,7 +41,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
 from model_src.dataset import get_dataloaders
-from model_src.ehr_encoder import EHR_Encoder
+from model_src.ehr_mamba import EHR_Mamba
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -55,7 +53,6 @@ def _set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-# pick the best compute hardware
 def _device(requested: str) -> torch.device:
     if requested == "auto":
         if torch.cuda.is_available():
@@ -126,8 +123,6 @@ def train(args: argparse.Namespace | object) -> None:
     max_seq_len   = meta["max_seq_len"]
     positive_rate = meta["positive_rate"]
 
-    # Class weights to handle label imbalance: w_pos = 1/rate, w_neg = 1/(1-rate)
-    #************ Might need to review this, just in case. 
     class_weights = torch.tensor(
         [1.0 / (1.0 - positive_rate), 1.0 / positive_rate],
         dtype=torch.float32,
@@ -138,7 +133,6 @@ def train(args: argparse.Namespace | object) -> None:
     print(f"Max seq len  : {max_seq_len}")
     print(f"Positive rate: {positive_rate:.1%}  →  class weights {class_weights.tolist()}")
 
-    # Determine safe max_num_visits from the saved tensor
     visit_ids_all = torch.load(data_dir / "visit_ids.pt", weights_only=True)
     max_num_visits = int(visit_ids_all.max().item()) + 1
     print(f"Max visit id : {max_num_visits - 1}  →  visit embedding size {max_num_visits}")
@@ -152,18 +146,20 @@ def train(args: argparse.Namespace | object) -> None:
     )
     print(f"Train batches: {len(train_dl)}  |  Val batches: {len(val_dl)}  |  Test batches: {len(test_dl)}")
 
-    model = EHR_Encoder(
+    model = EHR_Mamba(
         num_concepts=num_concepts,
         max_num_visits=max_num_visits,
         d_model=args.d_model,
-        num_heads=args.num_heads,
         num_layers=args.num_layers,
-        ff_dim=args.ff_dim,
+        d_state=getattr(args, "d_state", 16),
+        d_conv=getattr(args, "d_conv", 4),
+        d_expand=getattr(args, "d_expand", 2),
         dropout=args.dropout,
         max_seq_len=max_seq_len,
         fusion=getattr(args, "fusion", "add"),
         use_time=getattr(args, "use_time", False),
         use_age=getattr(args, "use_age", False),
+        bidirectional=getattr(args, "bidirectional", True),
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -173,15 +169,15 @@ def train(args: argparse.Namespace | object) -> None:
         weight=class_weights,
         label_smoothing=getattr(args, "label_smoothing", 0.0),
     )
-    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay) ## Need to adjust/experiment with
-    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr / 10) ## Need to adjust/experiment with
+    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr / 10)
     scaler    = GradScaler("cuda", enabled=device.type == "cuda")
 
     if device.type == "cuda":
-        gpu_name = torch.cuda.get_device_name(device)
+        gpu_name  = torch.cuda.get_device_name(device)
         gpu_count = torch.cuda.device_count()
     else:
-        gpu_name = None
+        gpu_name  = None
         gpu_count = 0
 
     config = vars(args) | {
@@ -208,9 +204,9 @@ def train(args: argparse.Namespace | object) -> None:
         )
         wandb.watch(model, log="gradients", log_freq=100)
 
-    best_auroc  = -1.0
-    best_epoch  = -1
-    history     = []
+    best_auroc = -1.0
+    best_epoch = -1
+    history    = []
 
     epoch_bar = tqdm(range(1, args.epochs + 1), desc="Training", unit="epoch")
 
@@ -219,7 +215,7 @@ def train(args: argparse.Namespace | object) -> None:
         model.train()
         train_loss, n = 0.0, 0
 
-        batch_bar = tqdm(train_dl, desc=f"  train", unit="batch", leave=False)
+        batch_bar = tqdm(train_dl, desc="  train", unit="batch", leave=False)
         for batch in batch_bar:
             concept_ids  = batch["concept_ids"].to(device)
             type_ids     = batch["type_ids"].to(device)
@@ -280,16 +276,14 @@ def train(args: argparse.Namespace | object) -> None:
     with open(output_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
 
-    # Evaluate best checkpoint on held-out test set
     model.load_state_dict(torch.load(output_dir / "best_model.pt", weights_only=True))
     test_metrics = evaluate(model, test_dl, criterion, device)
     print(f"Test  AUROC  {test_metrics['auroc']:.4f}  |  loss {test_metrics['loss']:.4f}")
     with open(output_dir / "test_metrics.json", "w") as f:
         json.dump(test_metrics, f, indent=2)
-    if args.use_wandb:
-        wandb.log({"test/auroc": test_metrics["auroc"], "test/loss": test_metrics["loss"]})
 
     if args.use_wandb:
+        wandb.log({"test/auroc": test_metrics["auroc"], "test/loss": test_metrics["loss"]})
         artifact = wandb.Artifact("best_model", type="model")
         artifact.add_file(str(output_dir / "best_model.pt"))
         wandb.log_artifact(artifact)
@@ -300,38 +294,41 @@ def train(args: argparse.Namespace | object) -> None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Train EHR_Encoder for cardiotoxicity prediction.",
+        description="Train EHR_Mamba for cardiotoxicity prediction.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--data-dir",     default="tokenization_outputs/ver1",
+    p.add_argument("--data-dir",     default="tokenization_outputs/Jul1_512",
                    help="Path to tokenization_outputs/<name>/")
-    p.add_argument("--output-dir",   default="model_outputs/run1",
+    p.add_argument("--output-dir",   default="model_outputs/mamba_run1",
                    help="Where to save checkpoints and logs.")
-    p.add_argument("--epochs",       type=int,   default=20)
-    p.add_argument("--batch-size",   type=int,   default=32)
-    p.add_argument("--lr",           type=float, default=1e-4)
+    p.add_argument("--epochs",       type=int,   default=100)
+    p.add_argument("--batch-size",   type=int,   default=16)
+    p.add_argument("--lr",           type=float, default=2e-4)
     p.add_argument("--weight-decay", type=float, default=1e-2)
+    p.add_argument("--label-smoothing", type=float, default=0.1, dest="label_smoothing")
     p.add_argument("--d-model",      type=int,   default=128)
-    p.add_argument("--num-heads",    type=int,   default=4)
     p.add_argument("--num-layers",   type=int,   default=4)
-    p.add_argument("--ff-dim",       type=int,   default=512)
+    p.add_argument("--d-state",      type=int,   default=16,  dest="d_state",
+                   help="SSM latent state size N. (default: 16)")
+    p.add_argument("--d-conv",       type=int,   default=4,   dest="d_conv",
+                   help="Depthwise Conv1d kernel width. (default: 4)")
+    p.add_argument("--d-expand",     type=int,   default=2,   dest="d_expand",
+                   help="Inner-dim multiplier; d_inner = d_expand * d_model. (default: 2)")
+    p.add_argument("--no-bidirectional", action="store_false", dest="bidirectional",
+                   help="Use causal (unidirectional) Mamba instead of bidirectional.")
+    p.set_defaults(bidirectional=True)
     p.add_argument("--dropout",      type=float, default=0.1)
-    p.add_argument("--num-workers",  type=int,   default=0)
+    p.add_argument("--num-workers",  type=int,   default=2)
     p.add_argument("--device",       default="auto",
                    help="'auto', 'cpu', 'cuda', or 'mps'.")
-    p.add_argument("--seed",          type=int,   default=42)
-    p.add_argument("--use-wandb",          action="store_true", dest="use_wandb",
-                   help="Enable Weights & Biases logging.")
-    p.add_argument("--wandb-project",      default="mimic-cardio-oncology", dest="wandb_project")
-    p.add_argument("--run-name",           default=None, dest="run_name",
-                   help="W&B run name (defaults to auto-generated).")
-    p.add_argument("--label-smoothing", type=float, default=0.0, dest="label_smoothing",
-                   help="Label smoothing for CrossEntropyLoss (0 = off, 0.1 recommended for small datasets).")
-    p.add_argument("--fusion",    default="add", choices=["add", "concat"],
-                   help="'add': BEHRT-style element-wise sum. 'concat': CEHR-BERT concat→Linear→GELU.")
-    p.add_argument("--use-time", action="store_true", dest="use_time",
+    p.add_argument("--seed",         type=int,   default=42)
+    p.add_argument("--use-wandb",    action="store_true", dest="use_wandb")
+    p.add_argument("--wandb-project", default="mimic-cardio-oncology", dest="wandb_project")
+    p.add_argument("--run-name",     default=None, dest="run_name")
+    p.add_argument("--fusion",       default="add", choices=["add", "concat"])
+    p.add_argument("--use-time",     action="store_true", dest="use_time",
                    help="Add sinusoidal time-gap embedding per token (requires dates.pt).")
-    p.add_argument("--use-age",  action="store_true", dest="use_age",
+    p.add_argument("--use-age",      action="store_true", dest="use_age",
                    help="Add continuous-age sinusoidal embedding (requires age_years.pt).")
 
     return p.parse_args()

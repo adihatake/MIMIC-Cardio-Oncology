@@ -27,7 +27,7 @@ from torch import nn
 from mamba_ssm import Mamba  # pip install causal-conv1d mamba-ssm
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from embedding_layers import EHR_Event_Embedding
+from mamba_embedding import MambaEmbedding
 
 
 class MambaBlock(nn.Module):
@@ -145,7 +145,7 @@ class EHR_Mamba(nn.Module):
     ) -> None:
         super().__init__()
 
-        self.embedding = EHR_Event_Embedding(
+        self.embedding = MambaEmbedding(
             num_concepts=num_concepts,
             max_num_visits=max_num_visits,
             d_token_embedding=d_model,
