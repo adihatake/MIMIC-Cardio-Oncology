@@ -1,3 +1,5 @@
+# The following dependencies take around 10-15 mins to install
+
 # Core data / ML
 numpy==1.26.4
 pandas==2.3.3
