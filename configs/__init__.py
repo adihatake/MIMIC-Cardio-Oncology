@@ -1,6 +1,6 @@
 from .cohort_config import CohortConfig
 from .tokenization_config import TokenizationConfig
 from .train_config import TrainConfig
+from .interpretation_config import InterpretationConfig
 
-# specify which modules to run
-__all__ = ["CohortConfig", "TokenizationConfig", "TrainConfig"]
+__all__ = ["CohortConfig", "TokenizationConfig", "TrainConfig", "InterpretationConfig"]

@@ -36,7 +36,12 @@ class MultiHeadedAttention(nn.Module):
         self.W_o = nn.Linear(d_model, d_model)
         self.attn_dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, padding_mask: torch.Tensor | None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        padding_mask: torch.Tensor | None,
+        return_attention: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         # x: (batch, seq_len, d_model)
         # padding_mask: (batch, seq_len)  — 1 for real tokens, 0 for padding
         batch_size, seq_len, _ = x.shape
@@ -50,10 +55,16 @@ class MultiHeadedAttention(nn.Module):
         if padding_mask is not None:
             scores = scores.masked_fill(padding_mask[:, None, None, :] == 0, float("-inf"))
 
-        attn_weights = self.attn_dropout(torch.softmax(scores, dim=-1))
-        context = torch.matmul(attn_weights, V)
+        # Pre-dropout softmax weights — used for visualization when return_attention=True.
+        # Dropout is applied only to the value-weighted context, preserving the true
+        # attention distribution for inspection.
+        attn_weights = torch.softmax(scores, dim=-1)          # (B, heads, seq, seq)
+        context = torch.matmul(self.attn_dropout(attn_weights), V)
         context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
-        return self.W_o(context)
+        out = self.W_o(context)
+        if return_attention:
+            return out, attn_weights
+        return out
 
 
 class TransformerEncoderLayer(nn.Module):
@@ -70,8 +81,18 @@ class TransformerEncoderLayer(nn.Module):
         )
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, padding_mask: torch.Tensor | None) -> torch.Tensor:
+    def forward(
+        self,
+        x: torch.Tensor,
+        padding_mask: torch.Tensor | None,
+        return_attention: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
         # Pre-norm: normalize input before each sub-layer (more stable than post-norm)
+        if return_attention:
+            attn_out, attn_w = self.attn(self.norm1(x), padding_mask, return_attention=True)
+            x = x + self.dropout(attn_out)
+            x = x + self.dropout(self.ffn(self.norm2(x)))
+            return x, attn_w
         x = x + self.dropout(self.attn(self.norm1(x), padding_mask))
         x = x + self.dropout(self.ffn(self.norm2(x)))
         return x
@@ -139,7 +160,8 @@ class EHR_Encoder(nn.Module):
         age_ids:      torch.Tensor,
         dates:        torch.Tensor | None = None,
         age_years:    torch.Tensor | None = None,
-    ) -> torch.Tensor:
+        return_attention: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
         x = self.embedding(
             concept_ids, type_ids, visit_ids, position_ids,
             age_ids, dates, age_years,
@@ -147,12 +169,20 @@ class EHR_Encoder(nn.Module):
 
         padding_mask = (concept_ids != 0).long()
 
+        all_attn: list[torch.Tensor] = []
         for layer in self.layers:
-            x = layer(x, padding_mask)
+            if return_attention:
+                x, attn_w = layer(x, padding_mask, return_attention=True)
+                all_attn.append(attn_w)   # (B, num_heads, seq, seq)
+            else:
+                x = layer(x, padding_mask)
 
         x   = self.norm(x)
         cls = self.cls_dropout(x[:, 0, :])
-        return self.classifier(cls)
+        logits = self.classifier(cls)
+        if return_attention:
+            return logits, all_attn   # list has one entry per layer
+        return logits
 
 # Smoke test using random tensors
 if __name__ == "__main__":
