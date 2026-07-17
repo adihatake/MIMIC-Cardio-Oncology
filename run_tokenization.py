@@ -11,10 +11,13 @@ Point run_train.py at the folder you want to train on.
   insert_att               ATT tokens (W0-W3, M1-M11, LT) between visits — needed
                            for C1/C2 embedding ablations
   insert_visit_delimiters  [V_START]/[V_END] around each visit block
-  bucket_labs              Append per-itemid quantile bucket (_Q1–_Q4) to abnormal
-                           lab tokens — changes vocab, requires re-tokenization
+  bucket_labs              Append per-itemid quantile bucket (_Q1–_Q4) to lab
+                           tokens — changes vocab, requires re-tokenization
   bucket_medications       Append per-drug dose-tier bucket (_Q1–_Q4) to medication
                            tokens — changes vocab, requires re-tokenization
+  only_abnormal_labs       (default True) Include only flagged-abnormal lab results
+  include_all_labs         (default False) Include all lab results regardless of flag;
+                           mutually exclusive with only_abnormal_labs
 ────────────────────────────────────────────────────────────────────────────────
 """
 
@@ -29,43 +32,30 @@ REPO_ROOT = Path(__file__).resolve().parent
 # ── shared settings ───────────────────────────────────────────────────────────
 _BASE = dict(
     data_dir    = REPO_ROOT.parent / "MIMIC_IV_raw_data",
-    cohort_name = "cycle_modeling_v3",
+    cohort_name = "cycle_modeling_v4",
     max_seq_len = 512,
     run_split   = False,
     run_summarize = True,
+    insert_visit_delimiters = True,
+    only_abnormal_labs = False,
+    include_all_labs = True
+
 )
 
 # ── tokenization variants ─────────────────────────────────────────────────────
 RUNS = [
     # Base: no ATT tokens, no bucketing
     TokenizationConfig(**_BASE,
-        output_name = "Jul1_512",
-    ),
-
-    # ATT tokens (needed for C1/C2 embedding ablations)
-    TokenizationConfig(**_BASE,
-        output_name = "Jul1_512_att",
-        insert_att  = True,
-    ),
-
-    # Bucketed labs
-    TokenizationConfig(**_BASE,
-        output_name = "Jul1_512_bucketed_labs",
-        bucket_labs = True,
-    ),
-
-    # Bucketed medications
-    TokenizationConfig(**_BASE,
-        output_name = "Jul1_512_bucketed_meds",
-        bucket_medications = True,
+        output_name = "Jul17_512_all_labs",
     ),
 
     # Bucketed labs + medications
     TokenizationConfig(**_BASE,
-        output_name            = "Jul1_512_bucketed_all",
+        output_name            = "Jul17_512_bucketed_all_labs",
         bucket_labs            = True,
         bucket_medications     = True,
     ),
+
 ]
 
 # ── run ───────────────────────────────────────────────────────────────────────
@@ -78,6 +68,8 @@ if __name__ == "__main__":
         print(f"    insert_visit_delimiters: {cfg.insert_visit_delimiters}")
         print(f"    bucket_labs            : {cfg.bucket_labs}")
         print(f"    bucket_medications     : {cfg.bucket_medications}")
+        print(f"    only_abnormal_labs     : {cfg.only_abnormal_labs}")
+        print(f"    include_all_labs       : {cfg.include_all_labs}")
         print(f"{'=' * 55}\n")
 
         print("── tokenize ────────────────────────────────────────────────────────")
@@ -90,6 +82,8 @@ if __name__ == "__main__":
             insert_visit_delimiters = cfg.insert_visit_delimiters,
             bucket_labs             = cfg.bucket_labs,
             bucket_medications      = cfg.bucket_medications,
+            only_abnormal_labs      = cfg.only_abnormal_labs,
+            include_all_labs        = cfg.include_all_labs,
         )
 
         if cfg.run_summarize:
