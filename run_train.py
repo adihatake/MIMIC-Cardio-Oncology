@@ -76,7 +76,7 @@ for s in SEEDS:
         **_BASE,
         data_dir   = Path("tokenization_outputs/Jul1_512"),
         seed       = s,
-        output_dir = Path(f"experiment_outputs/test_1/unbucketed/seed{s}"),
+        output_dir = Path(f"experiment_outputs/test_2/seed{s}"),
     ))
 
 # ── run ───────────────────────────────────────────────────────────────────────
