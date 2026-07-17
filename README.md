@@ -6,7 +6,7 @@
 
 # Pipeline Usage Notes
 
-End-to-end pipeline: **cohort → tokenization → summarize → train**
+End-to-end pipeline: **cohort → tokenization → train → interpret**
 
 Splits are computed per training run from the run's seed — not generated during tokenization.  
 This allows multi-seed experiments (seed = 42, 43, 44 …) each with independent patient assignments.
@@ -21,10 +21,10 @@ All scripts are run from the **repo root** unless noted otherwise.
 |---|---|---|
 | **How** | `python cohort_src/cohort_cli.py --data-dir ...` | `python run_cohort.py` |
 | **Config lives in** | Command-line arguments | `run_*.py` files, version-controlled |
-| **Best for** | One-off runs, shell scripts, HPC job submission | Development, experiments, ablations, notebooks |
-| **Multi-run** | Shell loop or separate invocations | Add entries to `RUNS` list in `run_train.py` |
+| **Best for** | One-off runs, shell scripts, HPC job submission | Development, experiments, ablations |
+| **Multi-run** | Shell loop or separate invocations | Add entries to `RUNS` list in the relevant runner |
 
-Both approaches call the same underlying `main()` functions — they are interchangeable and complementary, not competing.
+Both approaches call the same underlying `main()` functions — they are interchangeable and complementary.
 
 ---
 
@@ -32,6 +32,12 @@ Both approaches call the same underlying `main()` functions — they are interch
 
 ```bash
 pip install -r requirements.txt
+```
+
+Integrated Gradients (optional, Step 5) requires Captum:
+
+```bash
+pip install captum
 ```
 
 You will need access to the raw MIMIC-IV data directory, referred to below as `<DATA_DIR>`.  
@@ -60,12 +66,25 @@ python cohort_src/cohort_cli.py \
 | `--data-dir` | yes | — | Path to the MIMIC-IV raw data directory |
 | `--name` | no | `cycle_modeling_ver2` | Output subdirectory under `cohort_outputs/` |
 
+**Cohort definition and label assignment** (`sql_files/drug_cycles_sql/`):
+
+Each (patient, chemotherapy cycle) row receives one of four labels:
+
+| Label | Meaning |
+|---|---|
+| `positive` | A cardiotoxicity event occurred within the prediction window |
+| `negative_observed` | No event, and the patient was observed through the end of the window |
+| `exclude_already_toxic` | A cardiotoxicity event predated the prediction time |
+| `unknown_no_followup_evidence` | No event and no follow-up evidence reaching the window |
+
+`final_cycle_binary_modeling_table` retains only `positive` and `negative_observed` rows — unknown and already-toxic cases are excluded before any modelling step.
+
 **Outputs** (`cohort_outputs/<name>/`):
 
 | File | Description |
 |---|---|
 | `final_cycle_modeling_table.csv/.parquet` | One row per (patient, cycle), multi-class label |
-| `final_cycle_binary_modeling_table.csv/.parquet` | Same rows, binary label collapsed |
+| `final_cycle_binary_modeling_table.csv/.parquet` | Filtered to `positive` + `negative_observed` rows only |
 | `row_level_label_breakdown.csv` | Cycle counts per label |
 | `row_level_binary_label_breakdown.csv` | Cycle counts per binary label |
 | `row_level_drug_class_breakdown.csv` | Cycle counts per drug class combination |
@@ -113,8 +132,12 @@ python tokenization_src/tokenize_cli.py \
 | `--summarize` | no | off | Print summary statistics and save figures after tokenizing |
 | `--insert-att` | no | off | Insert CEHR-BERT Artificial Time Tokens (`W0`–`W3`, `M1`–`M11`, `LT`) between consecutive visits |
 | `--insert-visit-delimiters` | no | off | Wrap each visit's events with `[V_START]`/`[V_END]` tokens |
-| `--bucket-labs` | no | off | Append per-itemid quantile bucket (`_Q1`–`_Q4`) to abnormal lab tokens — changes vocab |
+| `--bucket-labs` | no | off | Append per-itemid quantile bucket (`_Q1`–`_Q4`) to lab tokens — changes vocab |
 | `--bucket-medications` | no | off | Append per-drug dose-tier bucket (`_Q1`–`_Q4`) to medication tokens — changes vocab |
+| `--only-abnormal-labs` | no | on (default) | Include only flagged-abnormal lab results (explicit form of the default) |
+| `--include-all-labs` | no | off | Include all lab results regardless of the MIMIC abnormality flag; mutually exclusive with `--only-abnormal-labs` |
+
+**Lab filtering note:** By default only labs with `flag IS NOT NULL` in MIMIC `labevents` are tokenized — i.e. results that the lab system marked as abnormal. This keeps sequence length manageable but means a lab that is always normal (e.g. Troponin I in this cohort) will be absent from the vocabulary entirely. Use `--include-all-labs` to include every inpatient result regardless of flag. The resolved flag (`only_abnormal_labs` / `include_all_labs`) is written to `metadata.json` for provenance.
 
 **Outputs** (`tokenization_outputs/<name>/`):
 
@@ -124,15 +147,14 @@ python tokenization_src/tokenize_cli.py \
 | `type_ids.pt` | Long tensor `(N, max_seq_len)` |
 | `visit_ids.pt` | Long tensor `(N, max_seq_len)` |
 | `position_ids.pt` | Long tensor `(N, max_seq_len)` |
-| `dates.pt` | Long tensor `(N, max_seq_len)` — days since 2000-01-01 per token; used by time embedding |
-| `age_ids.pt` | Long tensor `(N,)` — decade bucket (0–9); used in additive baseline |
-| `age_years.pt` | Float tensor `(N,)` — continuous age in years; used by concat embedding |
+| `dates.pt` | Long tensor `(N, max_seq_len)` — days since 2000-01-01 per token |
+| `age_ids.pt` | Long tensor `(N,)` — decade bucket (0–9) |
+| `age_years.pt` | Float tensor `(N,)` — continuous age in years |
 | `labels.pt` | Long tensor `(N,)` — binary labels |
 | `attention_mask.pt` | Bool tensor `(N, max_seq_len)` |
-| `samples.csv` | Per-sample metadata (subject_id, cycle_number, prediction_time, binary_label, seq_len) |
-| `samples.parquet` | Same as above in Parquet format |
-| `vocab.json` | Concept and type vocabulary mappings (includes ATT tokens `W0`–`W3`, `M1`–`M11`, `LT`) |
-| `metadata.json` | `max_seq_len`, `positive_rate`, vocab size, cohort stats, tokenisation flags |
+| `samples.csv/.parquet` | Per-sample metadata (subject_id, cycle_number, prediction_time, binary_label, seq_len) |
+| `vocab.json` | Concept and type vocabulary mappings |
+| `metadata.json` | `max_seq_len`, `positive_rate`, vocab size, tokenisation flags |
 
 You can also run the tokenizer module directly:
 
@@ -142,8 +164,8 @@ python tokenization_src/tokenize_cycle_sequences.py \
     --cohort cycle_modeling_ver2 \
     --name ver1 \
     --max-seq-len 600 \
-    --insert-att \
-    --insert-visit-delimiters
+    --insert-visit-delimiters \
+    --include-all-labs
 ```
 
 ### Sequence structure
@@ -183,8 +205,6 @@ Can be re-run at any time without re-tokenizing.
 python tokenization_src/summarize_tokenization.py tokenization_outputs/ver1
 ```
 
-Omit the path argument to use the default (`tokenization_outputs/ver1`).
-
 **Figures saved** (`tokenization_outputs/<name>/summarization_figures/`):
 
 | File | Description |
@@ -193,22 +213,19 @@ Omit the path argument to use the default (`tokenization_outputs/ver1`).
 | `sequence_length_histogram.png` | Distribution of sequence lengths with truncation line |
 | `vocabulary_breakdown.png` | Token counts by event type |
 | `age_distribution.png` | Distribution of patient age decade buckets |
-| `split_summary.png` | Train / val / test patient and sample counts (requires `splits.json`) |
 
 ---
 
 ## Step 4 — Train
 
-Two model architectures are available, selected via `model_type`:
+Two model architectures are available:
 
 | `model_type` | Class | Complexity | File |
 |---|---|---|---|
 | `"transformer"` (default) | `EHR_Encoder` | O(L²) attention | `model_src/ehr_encoder.py` |
 | `"mamba"` | `EHR_Mamba` | O(L) SSM recurrence | `model_src/ehr_mamba.py` |
 
-Both share the same `EHR_Event_Embedding` layer and the same ablation flags (`fusion`, `use_time`, `use_age`). `model_type="mamba"` requires CUDA and `mamba-ssm` installed (see `requirements.txt`).
-
-Trains the encoder on the tokenized EHR sequences. The patient split (70 / 15 / 15) is computed at runtime from `samples.parquet` using `--seed`, so no separate split step is needed. The same seed also controls weight initialisation, making each run fully reproducible.
+Both share the same `EHR_Event_Embedding` layer and the same ablation flags (`fusion`, `use_time`, `use_age`). `model_type="mamba"` requires CUDA and `mamba-ssm` installed.
 
 ```bash
 python model_src/train.py \
@@ -216,7 +233,7 @@ python model_src/train.py \
     --output-dir experiment_outputs/run1
 ```
 
-Quick debug run with a smaller model:
+Quick debug run:
 
 ```bash
 python model_src/train.py \
@@ -234,7 +251,7 @@ python model_src/train.py \
 | `--batch-size` | `32` | Training batch size |
 | `--lr` | `1e-4` | AdamW learning rate |
 | `--weight-decay` | `1e-2` | AdamW weight decay |
-| `--label-smoothing` | `0.0` | Label smoothing for CrossEntropyLoss (`0.1` recommended for small datasets) |
+| `--label-smoothing` | `0.0` | Label smoothing for CrossEntropyLoss |
 | `--d-model` | `128` | Embedding / hidden dimension |
 | `--num-heads` | `8` | Attention heads (must divide `d-model`) |
 | `--num-layers` | `2` | Number of TransformerEncoder layers |
@@ -244,11 +261,9 @@ python model_src/train.py \
 | `--device` | `auto` | `auto`, `cpu`, `cuda`, or `mps` |
 | `--seed` | `42` | Controls both the patient split and weight initialisation |
 | `--use-wandb` | off | Enable Weights & Biases experiment tracking |
-| `--wandb-project` | `mimic-cardio-oncology` | W&B project name |
-| `--run-name` | `None` | W&B run name (auto-generated if omitted) |
-| `--fusion` | `add` | `add`: BEHRT-style element-wise sum. `concat`: CEHR-BERT concat→Linear→GELU |
-| `--use-time` | off | Add sinusoidal time-gap embedding per token (requires `dates.pt`) |
-| `--use-age` | off | Add continuous-age sinusoidal embedding (requires `age_years.pt`) |
+| `--fusion` | `add` | `add`: BEHRT-style sum. `concat`: CEHR-BERT concat→Linear→GELU |
+| `--use-time` | off | Add sinusoidal time-gap embedding per token |
+| `--use-age` | off | Add continuous-age sinusoidal embedding |
 
 **Outputs** (`experiment_outputs/<run>/`):
 
@@ -257,55 +272,94 @@ python model_src/train.py \
 | `best_model.pt` | State dict of the best checkpoint (by val AUROC) |
 | `config.json` | All hyperparameters, derived vocab/seq sizes, hardware info, and run date |
 | `history.json` | Per-epoch train loss, val loss, val AUROC, and elapsed time |
-| `test_metrics.json` | AUROC and loss on the held-out test split, evaluated once after training |
+| `test_metrics.json` | AUROC and loss on the held-out test split |
+
+---
+
+## Step 5 — Interpret (xAI)
+
+Post-training interpretability using three complementary techniques:
+
+| Technique | What it shows | Strength |
+|---|---|---|
+| Raw attention | Per-head `(seq × seq)` weight matrix | Fast; exploratory — attention ≠ attribution |
+| Attention rollout | Cross-layer aggregated CLS relevance (Abnar & Zuidema 2020) | More principled than single-layer attention |
+| Integrated Gradients | Token attribution satisfying the completeness axiom (Captum) | Gold standard; requires `pip install captum` |
+
+**IG baseline:** The Integrated Gradients baseline is always a zero-embedding sequence — not the `[PAD]` token embedding, but a literal zero tensor in post-LayerNorm embedding space. This represents a neutral "no information" input and is consistent across all runs.
+
+### Single sample via CLI
+
+```bash
+# Explain by subject_id and cycle_number (recommended — named output folder)
+python interpretation/interpret.py \
+    --model-dir experiment_outputs/run1 \
+    --data-dir  tokenization_outputs/Jul17_512_all_labs \
+    --subject-id 12345 --cycle-number 2
+
+# Explain by dataset row index
+python interpretation/interpret.py \
+    --model-dir experiment_outputs/run1 \
+    --data-dir  tokenization_outputs/Jul17_512_all_labs \
+    --sample-idx 42
+
+# More accurate IG (default 100 steps; convergence delta < 0.01 is good)
+python interpretation/interpret.py ... --ig-steps 200
+
+# Skip IG if captum is not installed
+python interpretation/interpret.py ... --skip-ig
+
+# Show top 20 tokens in bar charts instead of 30
+python interpretation/interpret.py ... --top-k 20
+```
+
+**Outputs** (`interpretation/outputs/<subject>_cycle<n>/`):
+
+| File | Description |
+|---|---|
+| `attention_L{i}_H{j}.png` | Attention heatmap for layer `i`, head `j` (non-padding tokens only; CLS row highlighted) |
+| `attention_rollout.png` | Top-K tokens by rollout relevance, coloured by event type |
+| `integrated_gradients.png` | Top-K tokens by IG attribution (L2 norm over `d_model`), with convergence delta |
+| `attributions.csv` | Per-token rollout + IG scores for all non-padding positions, sorted by IG |
+
+### Visualize attributions separately
+
+Reads `attributions.csv` and writes three additional summary plots:
+
+```bash
+python interpretation/visualize_attributions.py \
+    --input-dir interpretation/outputs/12345_cycle2
+
+# Or point directly at the CSV
+python interpretation/visualize_attributions.py \
+    --csv interpretation/outputs/sample_42/attributions.csv
+
+# Write plots to a different directory
+python interpretation/visualize_attributions.py \
+    --input-dir interpretation/outputs/12345_cycle2 \
+    --output-dir interpretation/figures/12345_cycle2
+```
+
+| File | Description |
+|---|---|
+| `comparison_top{K}.png` | IG (top) and rollout (bottom) for the same top-K tokens on aligned panels |
+| `event_type_breakdown.png` | Total attribution summed by event type — shows whether the model relies more on diagnoses, labs, or medications |
+| `rollout_vs_ig_scatter.png` | Per-token scatter: rollout vs IG score; top-5 IG tokens annotated; divergences reveal where methods disagree |
 
 ---
 
 ## Model architecture
 
-Two encoders are available, both sharing the same `EHR_Event_Embedding` layer and producing `(B, 2)` logits for binary cardiotoxicity prediction.
+### Shared embedding layer (`model_src/embedding_layers.py`)
 
-### Transformer encoder (`model_type="transformer"`, default)
-
-```
-EHR_Event_Embedding → N × TransformerEncoderLayer (pre-norm, GELU FFN) → CLS pooling → Linear(d → 2)
-```
-
-Self-attention gives every token access to every other token (O(L²)).
-
-### Mamba encoder (`model_type="mamba"`)
-
-```
-EHR_Event_Embedding → N × BiMambaBlock (fwd SSM + bwd SSM + merge) → CLS pooling → Linear(d → 2)
-```
-
-`BiMambaBlock` runs two `mamba_ssm.Mamba` instances in opposite directions and merges their outputs, giving full left- and right-context at each position with O(L) recurrence rather than O(L²) attention. Uses the official implementation from [github.com/state-spaces/mamba](https://github.com/state-spaces/mamba).
-
-**Mamba-specific hyperparameters** (in addition to `d_model`, `num_layers`, `dropout`):
-
-| Param | Default | Description |
-|---|---|---|
-| `d_state` | `16` | SSM latent state size N — controls memory capacity |
-| `d_conv` | `4` | Depthwise Conv1d kernel width (local context before SSM) |
-| `d_expand` | `2` | Inner-dim multiplier: `d_inner = d_expand × d_model` |
-| `bidirectional` | `True` | `True` → BiMambaBlock (recommended); `False` → causal scan |
-
-**Requires CUDA:** `pip install causal-conv1d mamba-ssm` (see `requirements.txt`).
-
----
-
-The model is controlled by three orthogonal embedding flags set in `TrainConfig` or via CLI:
-
-### Embedding flags
+`EHR_Event_Embedding` is controlled by three orthogonal flags:
 
 | Flag | Values | Effect |
 |---|---|---|
 | `fusion` | `"add"` (default) | BEHRT-style element-wise sum of all embedding tables |
-| | `"concat"` | CEHR-BERT: `cat([concept, time*, age*, position]) → Linear(4d→d) → GELU`, then type/visit/segment as additive residuals. Missing components (disabled by flags below) are zeroed before projection — keeping weight shape identical across B0–B2. |
-| `use_time` | `False` (default) / `True` | Add learned sinusoidal time-gap per token: `sin((days/365.25) × w + φ)`. Requires `dates.pt`. |
-| `use_age` | `False` (default) / `True` | Add continuous-age sinusoidal per token: `sin(age_years × w + φ)`. In `"add"` mode this is added on top of the discrete decade-bucket embedding already present. Requires `age_years.pt`. |
-
-### Embedding components by configuration
+| | `"concat"` | CEHR-BERT: `cat([concept, time*, age*, position]) → Linear(4d→d) → GELU`, then type/visit/segment as additive residuals. Components disabled by `use_time=False` / `use_age=False` are zeroed before projection — weight shape stays identical across B0–B2. |
+| `use_time` | `False` / `True` | Learned sinusoidal time embedding: `sin((days/365.25) × w + φ)`. Requires `dates.pt`. |
+| `use_age` | `False` / `True` | Continuous-age sinusoidal embedding: `sin(age_years × w + φ)`. In `"add"` mode added on top of the discrete decade-bucket embedding. Requires `age_years.pt`. |
 
 | Component | `fusion="add"` | `fusion="concat"` |
 |---|---|---|
@@ -319,22 +373,42 @@ The model is controlled by three orthogonal embedding flags set in `TrainConfig`
 | Age sinusoidal (`use_age=True`) | additive | in concat (zeroed if False) |
 | Projection | — | `nn.Linear(4d → d)` |
 
-### Encoder
+### Transformer encoder (`model_type="transformer"`, default)
 
 ```
 EHR_Event_Embedding → N × TransformerEncoderLayer (pre-norm, GELU FFN) → CLS pooling → Linear(d → 2)
 ```
 
+Self-attention gives every token access to every other token (O(L²)).
+
 - Optimizer: AdamW
 - Scheduler: CosineAnnealingLR (`T_max=epochs`, `eta_min=lr/10`)
 - Loss: CrossEntropyLoss with inverse-frequency class weights + optional label smoothing
 - Mixed precision: `torch.amp.autocast` + `GradScaler` (CUDA only)
-- Gradient clipping: `max_norm=1.0`
 - Best checkpoint saved by validation AUROC
 
-### Regularization settings (`run_train.py` defaults)
+**`return_attention` hook:** `EHR_Encoder.forward()` accepts `return_attention=True`, which returns `(logits, all_attn)` where `all_attn` is a list of `(B, num_heads, seq, seq)` tensors — one per layer. Attention weights are pre-dropout softmax values. Used by `interpretation/interpret.py`.
 
-The dataset is small (~1,800 training samples), so regularization is more aggressive than the original CEHR-BERT paper. Architecture is matched to CEHR-BERT (`d_model=128`, 8 heads) but with fewer layers and tighter regularization:
+### Mamba encoder (`model_type="mamba"`)
+
+```
+EHR_Event_Embedding → N × BiMambaBlock (fwd SSM + bwd SSM + merge) → CLS pooling → Linear(d → 2)
+```
+
+`BiMambaBlock` runs two `mamba_ssm.Mamba` instances in opposite directions and merges their outputs, giving full bidirectional context at O(L) cost. Uses [github.com/state-spaces/mamba](https://github.com/state-spaces/mamba).
+
+| Param | Default | Description |
+|---|---|---|
+| `d_state` | `16` | SSM latent state size — controls memory capacity |
+| `d_conv` | `4` | Depthwise Conv1d kernel width |
+| `d_expand` | `2` | Inner-dim multiplier: `d_inner = d_expand × d_model` |
+| `bidirectional` | `True` | `True` → BiMambaBlock (recommended); `False` → causal |
+
+Requires CUDA: `pip install causal-conv1d mamba-ssm`.
+
+### Regularization (`run_train.py` defaults)
+
+The dataset is small (~1,800 training samples), so regularization is more aggressive than the original CEHR-BERT paper:
 
 | Setting | Value | Notes |
 |---|---|---|
@@ -344,13 +418,9 @@ The dataset is small (~1,800 training samples), so regularization is more aggres
 | `weight_decay` | 5e-2 | L2 penalty via AdamW |
 | `label_smoothing` | 0.1 | Prevents overconfident predictions on small data |
 
-If val loss diverges from train loss, reduce `num_layers` to 1 or `d_model` to 64 before increasing dropout further.
-
 ---
 
 ## Embedding ablations
-
-### Ablation grid
 
 | ID | `fusion` | `use_time` | `use_age` | Purpose |
 |---|---|---|---|---|
@@ -364,32 +434,13 @@ If val loss diverges from train loss, reduce `num_layers` to 1 or `d_model` to 6
 | C1 | best of A/B | — | — | Same flags + `insert_att=True` tokenization |
 | C2 | `"concat"` | True | True | Full CEHR-BERT (concat + time + age + ATT) |
 
-### Tokenization requirements
-
-`dates.pt` and `age_years.pt` are **always written** by the tokenizer. No special tokenization flag is needed for A0–B2.
-
-C1/C2 require a separate tokenization built with `insert_att=True`. The `Jul1_512_att` variant is already defined in `run_tokenization.py`'s `RUNS` list — just run it:
-
-```bash
-python run_tokenization.py   # produces tokenization_outputs/Jul1_512_att
-```
-
-Then in `run_train.py`, uncomment the C-row in `ABLATIONS` and set its `data_dir` to `tokenization_outputs/Jul1_512_att`.
-
-Tokenization-level flags (set in `run_tokenization.py` / `TokenizationConfig`):
-
-| Flag | Effect |
-|---|---|
-| `insert_att=True` | ATT tokens between visits (`W0`–`W3`, `M1`–`M11`, `LT`) — needed for C1/C2 |
-| `insert_visit_delimiters=True` | `[V_START]`/`[V_END]` around each hospital visit |
-| `bucket_labs=True` | Append per-itemid quantile bucket (`_Q1`–`_Q4`) to abnormal lab tokens |
-| `bucket_medications=True` | Append per-drug dose-tier bucket (`_Q1`–`_Q4`) to medication tokens |
+`dates.pt` and `age_years.pt` are **always written** by the tokenizer — no special flag is needed for A0–B2. C1/C2 require a separate tokenization built with `insert_att=True`.
 
 ---
 
-## Runner scripts (developer workflow)
+## Runner scripts
 
-Config dataclasses live in `configs/` and are imported by the runner scripts at the repo root.
+Config dataclasses live in `configs/` and are imported by the runner scripts.  
 Edit the config at the top of each runner, then execute it — no CLI flags needed.
 
 ### `run_cohort.py`
@@ -402,212 +453,198 @@ python run_cohort.py
 
 ### `run_tokenization.py`
 
-Defines multiple tokenization variants in a `RUNS` list — same pattern as `run_train.py`. Each entry is a `TokenizationConfig` with its own `output_name` and flags, producing an independent folder under `tokenization_outputs/`.
-
-```python
-_BASE = dict(
-    data_dir    = ...,
-    cohort_name = "cycle_modeling_v3",
-    max_seq_len = 512,
-    run_summarize = True,
-)
-
-RUNS = [
-    TokenizationConfig(**_BASE, output_name="Jul1_512"),                          # base
-    TokenizationConfig(**_BASE, output_name="Jul1_512_att",   insert_att=True),   # C1/C2
-    TokenizationConfig(**_BASE, output_name="Jul1_512_bucketed_labs",  bucket_labs=True),
-    TokenizationConfig(**_BASE, output_name="Jul1_512_bucketed_meds",  bucket_medications=True),
-    TokenizationConfig(**_BASE, output_name="Jul1_512_bucketed_all",   bucket_labs=True, bucket_medications=True),
-]
-```
-
-Comment out any variants you don't need, then:
+Defines multiple tokenization variants in a `RUNS` list. Each entry is a `TokenizationConfig`.  
+Current variants tokenize from `cycle_modeling_v4` with `include_all_labs=True` and `insert_visit_delimiters=True`.
 
 ```bash
 python run_tokenization.py
 ```
 
-Each run prints a header summarising its active flags before tokenizing.
+`TokenizationConfig` fields:
 
-### `run_mamba.py`
-
-Mirror of `run_train.py` for the Mamba encoder. Edit `_BASE` and the `RUNS` list, then:
-
-```bash
-python run_mamba.py
-```
-
-Requires CUDA + `pip install causal-conv1d mamba-ssm`. The same embedding ablation grid (A0–B2) applies — see `run_train.py` for the pattern.
+| Field | Default | Description |
+|---|---|---|
+| `data_dir` | required | Path to MIMIC-IV raw data |
+| `cohort_name` | `"cycle_modeling_ver2"` | Source under `cohort_outputs/` |
+| `output_name` | `"ver1"` | Output under `tokenization_outputs/` |
+| `max_seq_len` | `600` | Token sequence length |
+| `insert_att` | `False` | ATT tokens between visits |
+| `insert_visit_delimiters` | `False` | `[V_START]`/`[V_END]` around each visit |
+| `bucket_labs` | `False` | Append `_Q1`–`_Q4` quantile bucket to lab tokens |
+| `bucket_medications` | `False` | Append `_Q1`–`_Q4` dose-tier bucket to medication tokens |
+| `only_abnormal_labs` | `True` | Include only flagged-abnormal lab results (default) |
+| `include_all_labs` | `False` | Include all lab results; mutually exclusive with `only_abnormal_labs` |
+| `run_split` | `False` | Run patient split after tokenizing |
+| `run_summarize` | `True` | Run summarization figures after tokenizing |
 
 ### `run_train.py`
 
-The file you edit most often. Define ablations in the `ABLATIONS` list and seeds in `SEEDS` — the script generates and runs every combination sequentially.
+The file you edit most often. Defines ablations and seeds; generates all combinations.
 
-Each `seed` value independently controls two things:
-- **Patient split** — which patients go to train / val / test (70 / 15 / 15, computed at runtime)
+Each `seed` independently controls:
+- **Patient split** — which patients go to train / val / test (70 / 15 / 15)
 - **Model initialisation** — weight init and dropout randomness
-
-**Ablation + multi-seed pattern** (current default):
 
 ```python
 ABLATIONS = [
     ("A0", dict(fusion="add",    use_time=False, use_age=False)),
-    ("A1", dict(fusion="add",    use_time=True,  use_age=False)),
-    ("A2", dict(fusion="add",    use_time=False, use_age=True)),
-    ("A3", dict(fusion="add",    use_time=True,  use_age=True)),
-    ("B0", dict(fusion="concat", use_time=False, use_age=False)),
-    ("B1", dict(fusion="concat", use_time=True,  use_age=False)),
+    ...
     ("B2", dict(fusion="concat", use_time=True,  use_age=True)),
 ]
-
 SEEDS = [42, 43, 44, 45, 46]
 
 RUNS = [
     TrainConfig(**_BASE, **emb_kwargs, seed=s,
-                output_dir=Path(f"experiment_outputs/Jul1_ablations/{ablation_id}/seed{s}"),
+                output_dir=Path(f"experiment_outputs/{ablation_id}/seed{s}"),
                 run_name=f"{ablation_id}-seed{s}")
     for ablation_id, emb_kwargs in ABLATIONS
     for s in SEEDS
 ]
 ```
 
-This produces 35 runs (7 ablations × 5 seeds). Average `test_metrics.json` across seeds to report mean ± std AUROC per ablation.
-
 ```bash
 python run_train.py
 ```
 
-Each run saves its own `config.json`, `history.json`, `best_model.pt`, and `test_metrics.json` to `output_dir`.  
-Set `use_wandb = True` in `_BASE` to enable Weights & Biases logging for all runs.
+Average `test_metrics.json` across seeds to report mean ± std AUROC per ablation.
+
+### `run_mamba.py`
+
+Mirror of `run_train.py` for the Mamba encoder. Requires CUDA + `pip install causal-conv1d mamba-ssm`.
+
+```bash
+python run_mamba.py
+```
+
+### `run_xgboost.py`
+
+XGBoost baseline using hand-crafted features derived from the binary modeling table (drug class exposure flags, baseline LVEF, pre-existing CV history, age). Produces AUROC and a feature importance plot. Useful as a non-sequential reference point to contextualize transformer performance.
+
+```bash
+python run_xgboost.py
+```
+
+Does not require a tokenization step — reads directly from `cohort_outputs/<name>/final_cycle_binary_modeling_table.csv`.
+
+### `run_interpretation.py`
+
+Batch interpretability runner. Define samples in `RUNS`, then:
+
+```bash
+python run_interpretation.py
+```
+
+Each entry calls `interpretation/interpret.py` (attention heatmaps + rollout + IG) followed by `interpretation/visualize_attributions.py` (comparison chart + event-type breakdown + scatter).
+
+```python
+_BASE = dict(
+    model_dir     = REPO_ROOT / "experiment_outputs" / "run1",
+    data_dir      = REPO_ROOT / "tokenization_outputs" / "Jul17_512_all_labs",
+    ig_steps      = 100,
+    top_k         = 30,
+    skip_ig       = False,
+    run_visualize = True,
+    device        = "auto",
+)
+
+RUNS = [
+    InterpretationConfig(**_BASE, subject_id=10006008, cycle_number=1),
+    InterpretationConfig(**_BASE, subject_id=10006008, cycle_number=2),
+]
+```
+
+`InterpretationConfig` fields:
+
+| Field | Default | Description |
+|---|---|---|
+| `model_dir` | required | Experiment directory with `config.json` + `best_model.pt` |
+| `sample_idx` | `None` | Row index in the tokenized dataset |
+| `subject_id` | `None` | MIMIC subject_id (use with `cycle_number`) |
+| `cycle_number` | `None` | Chemotherapy cycle number (use with `subject_id`) |
+| `data_dir` | `None` | Tokenization directory (falls back to value in `config.json`) |
+| `output_dir` | auto | Defaults to `interpretation/outputs/<subject>_cycle<n>/` |
+| `ig_steps` | `100` | Integration steps for IG (more = more accurate, slower) |
+| `skip_ig` | `False` | Skip IG if captum is not installed |
+| `top_k` | `30` | Top-K tokens in bar charts |
+| `run_visualize` | `True` | Run `visualize_attributions` after `interpret` |
+| `device` | `"auto"` | `auto`, `cpu`, `cuda`, or `mps` |
 
 ### `run_pipeline.py`
 
-Full end-to-end run. Reads configs from the three stage scripts above — no duplication.
-Use this for reproducibility or first-time setup.
+Full end-to-end run. Toggle stages with `RUN_*` flags at the top of the file.
 
 ```bash
 python run_pipeline.py
 ```
 
-Toggle stages with the `RUN_*` flags at the top of the file.
-
-### Config serialization
-
-Configs can be saved and reloaded as JSON for experiment tracking:
-
-```python
-cfg.save("experiment_outputs/run1/config.json")
-cfg = TrainConfig.load("experiment_outputs/run1/config.json")
-```
-
-`run_train.py` does this automatically for every run.
-
 ---
 
 ## Data exploration
 
-Scripts and notebooks for inspecting the tokenized dataset live in `data_exploration/`.
+Scripts and notebooks in `data_exploration/`.
 
 ### `data_exploration/inspect_patient.py`
 
-Visualize a single patient's tokenized EHR sequence in the terminal, and optionally run a model prediction on it.
+Visualize a single patient's tokenized EHR sequence in the terminal, and optionally run a model prediction.
 
 ```bash
-# Random patient from the test split
-python data_exploration/inspect_patient.py
-
-# Specific index within the split (0-based)
 python data_exploration/inspect_patient.py --patient-idx 5
-
-# Look up by MIMIC subject_id directly
 python data_exploration/inspect_patient.py --subject-id 13595646
-
-# Subject with multiple chemotherapy cycles — pick cycle 1 (0-based)
-python data_exploration/inspect_patient.py --subject-id 13595646 --cycle-idx 1
-
-# Attach a model prediction
 python data_exploration/inspect_patient.py --patient-idx 5 --model-dir experiment_outputs/run1
-
-# Show all events per visit instead of truncating
-python data_exploration/inspect_patient.py --patient-idx 5 --max-per-visit 0
 ```
 
 | Argument | Default | Description |
 |---|---|---|
 | `--data-dir` | `tokenization_outputs/ver1` | Tokenization directory |
-| `--split` | `test` | Which split to sample from (`train`, `val`, `test`) |
+| `--split` | `test` | Which split to sample from |
 | `--patient-idx` | random | 0-based index within the split |
 | `--subject-id` | — | MIMIC subject_id (searches across all splits) |
-| `--cycle-idx` | `0` | Which cycle to show when a subject has multiple |
-| `--model-dir` | — | Experiment dir with `config.json` + `best_model.pt` |
+| `--cycle-idx` | `0` | Which cycle to show for multi-cycle patients |
+| `--model-dir` | — | Experiment dir for an attached model prediction |
 | `--max-per-visit` | `20` | Max events shown per visit (`0` = all) |
 
-Requires `rich`:  `pip install rich`
+Requires `rich`: `pip install rich`
 
 ---
 
 ## Evaluation
 
-Post-training evaluation scripts live in `evaluation/`.
+Post-training evaluation scripts in `evaluation/`.
 
 ### `evaluation/evaluate_model.py`
 
-Runs a trained checkpoint on a full data split and reports aggregate metrics and a per-sample result table. The split is reconstructed from the seed in `config.json`, so it exactly matches the split used during training — no `splits.json` needed.
-
-Note: `train.py` already evaluates the test split automatically and saves `test_metrics.json`. Use this script for deeper per-sample analysis or to re-evaluate on a different split.
+Runs a trained checkpoint on a full data split and reports aggregate metrics and a per-sample table.
 
 ```bash
-# Evaluate on test split (default)
 python evaluation/evaluate_model.py --model-dir experiment_outputs/run1
-
-# Evaluate on val split
 python evaluation/evaluate_model.py --model-dir experiment_outputs/run1 --split val
-
-# Save per-sample predictions to CSV
 python evaluation/evaluate_model.py --model-dir experiment_outputs/run1 \
     --output-csv experiment_outputs/run1/test_results.csv
 ```
 
-Reports: AUROC, accuracy, precision, recall, F1, confusion matrix, and a per-sample table with subject_id, cycle, true label, predicted label, and P(cardiotoxic).
+Reports: AUROC, accuracy, precision, recall, F1, confusion matrix.
 
 | Argument | Default | Description |
 |---|---|---|
 | `--model-dir` | required | Experiment dir with `config.json` + `best_model.pt` |
-| `--data-dir` | from config | Tokenization directory (read from `config.json` if omitted) |
-| `--split` | `test` | Which split to evaluate on (`train`, `val`, `test`) |
+| `--data-dir` | from config | Tokenization directory |
+| `--split` | `test` | `train`, `val`, or `test` |
 | `--batch-size` | `32` | Inference batch size |
-| `--threshold` | `0.5` | Decision threshold for binary predictions |
-| `--max-rows` | `50` | Max rows shown in the per-sample table |
-| `--output-csv` | — | Optional path to save full per-sample results |
+| `--threshold` | `0.5` | Decision threshold |
+| `--output-csv` | — | Optional path to save per-sample results |
 
 ### `evaluation/compare_ablations.py`
 
-Scans an experiment directory for all `test_metrics.json` files, groups them by ablation ID, and reports mean ± std AUROC across seeds. Also produces a bar chart with error bars.
+Scans an experiment directory for all `test_metrics.json` files, groups by ablation ID, and reports mean ± std AUROC across seeds with a bar chart.
 
 ```bash
-# Print summary table
 python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/
-
-# Save bar chart
+python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/ --sort auroc
 python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/ \
     --save experiment_outputs/Jul1_ablations/comparison.png
-
-# Sort by mean AUROC instead of ablation name
-python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/ --sort auroc
-
-# Table only, no plot
-python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/ --no-plot
 ```
 
-| Argument | Default | Description |
-|---|---|---|
-| `root` | required | Root experiment directory containing `<ablation>/<seed>/test_metrics.json` |
-| `--save` | — | Save bar chart to this path (PNG/PDF). Omit to display interactively |
-| `--sort` | `id` | Sort rows by `id` (ablation name) or `auroc` (best first) |
-| `--no-plot` | off | Print table only, skip the bar chart |
-| `--dpi` | `150` | Output DPI when saving |
-
-Expected directory layout:
+Expected layout:
 ```
 experiment_outputs/Jul1_ablations/
   A0/seed42/test_metrics.json
@@ -616,73 +653,79 @@ experiment_outputs/Jul1_ablations/
   ...
 ```
 
----
-
 ### `evaluation/plot_history.py`
 
-Plots training loss and validation AUROC curves from `history.json`. Supports comparing multiple runs side by side.
+Plots training loss and validation AUROC curves from `history.json`. Supports comparing multiple runs.
 
 ```bash
-# Single run — display interactively
 python evaluation/plot_history.py --model-dir experiment_outputs/run1
-
-# Save to PNG
-python evaluation/plot_history.py --model-dir experiment_outputs/run1 \
-    --save experiment_outputs/run1/training_curves.png
-
-# Compare multiple runs on the same plot
 python evaluation/plot_history.py \
     --model-dir experiment_outputs/run1 experiment_outputs/run2 \
     --save comparison.png
 ```
 
-Requires `matplotlib`: `pip install matplotlib`
-
 ---
 
 ## Smoke tests
 
-Verify individual modules without the full dataset:
-
 ```bash
-# Embedding layer
-python model_src/embedding_layers.py
+python model_src/embedding_layers.py        # embedding layer
+python model_src/ehr_encoder.py             # transformer architecture + return_attention
+python model_src/ehr_mamba.py               # Mamba architecture (requires CUDA + mamba-ssm)
+python model_src/dataset.py tokenization_outputs/ver1   # DataLoader
+```
 
-# Transformer encoder architecture
-python model_src/ehr_encoder.py
+---
 
-# Mamba encoder architecture (requires CUDA + mamba-ssm)
-python model_src/ehr_mamba.py
+## Repository structure
 
-# Dataset / DataLoader (requires tokenization_outputs/ver1)
-python model_src/dataset.py tokenization_outputs/ver1
+```
+MIMIC-Cardio-Oncology/
+├── cohort_src/
+│   ├── cohort_cli.py                  CLI entry point for cohort generation
+│   └── generate_cycle_modeling_table.py  DuckDB SQL chain → binary modeling table
+├── configs/
+│   ├── cohort_config.py               CohortConfig dataclass
+│   ├── tokenization_config.py         TokenizationConfig dataclass
+│   ├── train_config.py                TrainConfig dataclass
+│   └── interpretation_config.py       InterpretationConfig dataclass
+├── data_exploration/
+│   ├── inspect_patient.py             Terminal patient sequence viewer
+│   └── *.ipynb                        Exploratory notebooks
+├── evaluation/
+│   ├── evaluate_model.py              Per-split metrics + per-sample table
+│   ├── compare_ablations.py           Mean ± std AUROC across seeds
+│   └── plot_history.py                Training curves
+├── interpretation/
+│   ├── interpret.py                   Attention heatmaps + rollout + Integrated Gradients
+│   └── visualize_attributions.py      Summary plots from attributions.csv
+├── model_src/
+│   ├── embedding_layers.py            EHR_Event_Embedding + TimeEmbeddingLayer
+│   ├── ehr_encoder.py                 EHR_Encoder (Transformer, return_attention hook)
+│   ├── ehr_mamba.py                   EHR_Mamba (bidirectional Mamba)
+│   ├── mamba_embedding.py             Mamba-specific embedding
+│   ├── mamba_train.py                 Mamba training loop
+│   ├── train.py                       Transformer training loop
+│   └── dataset.py                     EHRDataset + DataLoader helpers
+├── sql_files/
+│   └── drug_cycles_sql/               Numbered DuckDB SQL chain (00→06)
+├── tokenization_src/
+│   ├── tokenize_cycle_sequences.py    Core tokenizer
+│   ├── tokenize_cli.py                CLI entry point for tokenization
+│   ├── split_dataset.py               Patient-level stratified split
+│   └── summarize_tokenization.py      Summary statistics + figures
+├── run_cohort.py                      Runner: cohort generation
+├── run_tokenization.py                Runner: tokenization variants
+├── run_train.py                       Runner: transformer ablation sweep
+├── run_mamba.py                       Runner: Mamba training
+├── run_xgboost.py                     Runner: XGBoost baseline
+├── run_interpretation.py              Runner: batch xAI interpretation
+└── run_pipeline.py                    Runner: full end-to-end pipeline
 ```
 
 ---
 
 ## Typical full run
-
-**Via CLI:**
-
-```bash
-# 1. Build cohort
-python cohort_src/cohort_cli.py \
-    --data-dir <DATA_DIR> \
-    --name cycle_modeling_ver2
-
-# 2. Tokenize and summarize (no split — computed per training run)
-python tokenization_src/tokenize_cli.py \
-    --data-dir <DATA_DIR> \
-    --cohort cycle_modeling_ver2 \
-    --name ver1 \
-    --summarize
-
-# 3. Train (split computed from --seed; test metrics saved to experiment_outputs/run1/test_metrics.json)
-python model_src/train.py \
-    --data-dir tokenization_outputs/ver1 \
-    --output-dir experiment_outputs/run1 \
-    --seed 42
-```
 
 **Via runner scripts** (edit `data_dir` in each file first):
 
@@ -690,58 +733,57 @@ python model_src/train.py \
 python run_cohort.py
 python run_tokenization.py
 python run_train.py
+python run_interpretation.py   # after adding samples to RUNS
 ```
 
-Or all at once:
+**Via CLI:**
 
 ```bash
-python run_pipeline.py
-```
+# 1. Build cohort
+python cohort_src/cohort_cli.py --data-dir <DATA_DIR> --name cycle_modeling_v4
 
-### Running the full embedding ablation sweep (A0–B2, 5 seeds)
+# 2. Tokenize (all labs, visit delimiters)
+python tokenization_src/tokenize_cli.py \
+    --data-dir <DATA_DIR> \
+    --cohort cycle_modeling_v4 \
+    --name Jul17_512_all_labs \
+    --max-seq-len 512 \
+    --insert-visit-delimiters \
+    --include-all-labs \
+    --summarize
 
-A0–B2 all use the same tokenization — `dates.pt` and `age_years.pt` are always written.  
-No re-tokenization needed.
-
-```bash
-# Edit _BASE["data_dir"] in run_train.py to point at your tokenization, then:
-python run_train.py
-# Runs 35 jobs: 7 ablations × 5 seeds
-# Results: experiment_outputs/Jul1_ablations/<ID>/seed<N>/test_metrics.json
-```
-
-To run a single ablation manually (e.g. A1, seed 42):
-
-```bash
+# 3. Train
 python model_src/train.py \
-    --data-dir tokenization_outputs/Jun30_512 \
-    --output-dir experiment_outputs/test_A1 \
-    --fusion add --use-time \
-    --seed 42 --epochs 100
+    --data-dir tokenization_outputs/Jul17_512_all_labs \
+    --output-dir experiment_outputs/run1 \
+    --seed 42
+
+# 4. Evaluate
+python evaluation/evaluate_model.py --model-dir experiment_outputs/run1
+
+# 5. Interpret a specific patient
+python interpretation/interpret.py \
+    --model-dir experiment_outputs/run1 \
+    --data-dir tokenization_outputs/Jul17_512_all_labs \
+    --subject-id 10006008 --cycle-number 1
 ```
 
-### Running C1/C2 (requires ATT tokenization)
+### Full embedding ablation sweep (A0–B2, 5 seeds)
 
 ```bash
-# 1. Build ATT tokenization (Jul1_512_att is already in run_tokenization.py's RUNS list)
-python run_tokenization.py
+# All 35 runs (7 ablations × 5 seeds):
+python run_train.py
 
-# 2. In run_train.py: uncomment the C2 row in ABLATIONS and set data_dir="tokenization_outputs/Jul1_512_att"
+# Compare results:
+python evaluation/compare_ablations.py experiment_outputs/ --sort auroc
+```
+
+### C1/C2 (requires ATT tokenization)
+
+```bash
+# Add ATT variant to run_tokenization.py RUNS, then:
+python run_tokenization.py   # produces tokenization_outputs/Jul17_512_att
+
+# In run_train.py: uncomment C1/C2 rows and set data_dir to the ATT tokenization
 python run_train.py
 ```
-
-### Multi-seed experiment (variance estimation)
-
-```bash
-# After tokenizing once, train with seeds 42–46
-for SEED in 42 43 44 45 46; do
-    python model_src/train.py \
-        --data-dir tokenization_outputs/ver1 \
-        --output-dir experiment_outputs/A0_seed${SEED} \
-        --fusion add \
-        --seed ${SEED}
-done
-# Average test_metrics.json across seeds for mean ± std AUROC
-```
-
-Or define all seeds in the `RUNS` list in `run_train.py`.
