@@ -93,6 +93,17 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Append per-drug dose-tier bucket (Q1-Q4) to medication tokens.",
     )
+    lab_group = parser.add_mutually_exclusive_group()
+    lab_group.add_argument(
+        "--include-all-labs",
+        action="store_true",
+        help="Include all lab results regardless of abnormality flag (opposite of default).",
+    )
+    lab_group.add_argument(
+        "--only-abnormal-labs",
+        action="store_true",
+        help="Include only flagged-abnormal lab results (default behaviour; explicit form).",
+    )
     return parser.parse_args()
 
 
@@ -116,6 +127,8 @@ def main() -> None:
     print(f"  run summarize : {run_summarize}")
     print(f"  bucket labs   : {args.bucket_labs}")
     print(f"  bucket meds   : {args.bucket_medications}")
+    print(f"  include all labs    : {args.include_all_labs}")
+    print(f"  only abnormal labs  : {args.only_abnormal_labs or not args.include_all_labs}")
     print("=" * 55)
     print()
 
@@ -128,6 +141,8 @@ def main() -> None:
         max_seq_len=args.max_seq_len,
         bucket_labs=args.bucket_labs,
         bucket_medications=args.bucket_medications,
+        include_all_labs=args.include_all_labs,
+        only_abnormal_labs=args.only_abnormal_labs,
     )
 
     # ── step 2: split ─────────────────────────────────────────────────────────

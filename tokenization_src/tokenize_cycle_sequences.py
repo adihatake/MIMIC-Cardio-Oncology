@@ -273,7 +273,8 @@ def _build_medications(hadm_ids: set[int], admissions: pd.DataFrame, bucket: boo
 
 
 def _build_labs(subject_ids: set[int], hadm_ids: set[int],
-                admissions: pd.DataFrame, bucket: bool = False) -> pd.DataFrame:
+                admissions: pd.DataFrame, bucket: bool = False,
+                only_abnormal_labs: bool = True) -> pd.DataFrame:
     # Because of how massive (18GB) the lab events csv file is, DuckDB reads the 18 GB CSV in
     # parallel and pushes the JOIN filters down into the scan, so only matching rows ever enter memory.
     t0 = time.time()
@@ -286,6 +287,8 @@ def _build_labs(subject_ids: set[int], hadm_ids: set[int],
     if bucket:
         select_cols += ", l.valuenum"
 
+    flag_filter = "AND l.flag IS NOT NULL" if only_abnormal_labs else ""
+
     con = duckdb.connect()
     con.register("sid_filter", sid_df)
     con.register("hid_filter", hid_df)
@@ -294,15 +297,16 @@ def _build_labs(subject_ids: set[int], hadm_ids: set[int],
         FROM read_csv_auto('{file_path}', header = true) l
         INNER JOIN sid_filter USING (subject_id)
         INNER JOIN hid_filter USING (hadm_id)
-        WHERE l.flag     IS NOT NULL
-          AND l.storetime IS NOT NULL
+        WHERE l.storetime IS NOT NULL
+          {flag_filter}
     """).df()
     con.close()
 
     print(f"  labevents.csv         → {len(lab):,} rows ({time.time()-t0:.1f}s)")
     lab["storetime"] = pd.to_datetime(lab["storetime"], errors="coerce")
     lab = lab.dropna(subset=["storetime"])
-    print(f"    {len(lab):,} abnormal inpatient lab rows retained for {lab['subject_id'].nunique():,} patients")
+    lab_desc = "abnormal inpatient" if only_abnormal_labs else "all inpatient"
+    print(f"    {len(lab):,} {lab_desc} lab rows retained for {lab['subject_id'].nunique():,} patients")
 
     lab = lab.merge(
         admissions[["hadm_id", "admittime", "visit_id"]],
@@ -345,6 +349,7 @@ def build_master_events(
     subject_ids: set[int],
     bucket_labs: bool = False,
     bucket_medications: bool = False,
+    only_abnormal_labs: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Load and merge all EHR event types into one chronologically sorted DataFrame."""
     print("Loading admissions...")
@@ -357,7 +362,8 @@ def build_master_events(
     proc = _build_procedures(hadm_ids, admissions)
     print("Loading medications (prescriptions)...")
     med  = _build_medications(hadm_ids, admissions, bucket=bucket_medications)
-    labs = _build_labs(subject_ids, hadm_ids, admissions, bucket=bucket_labs)
+    labs = _build_labs(subject_ids, hadm_ids, admissions, bucket=bucket_labs,
+                       only_abnormal_labs=only_abnormal_labs)
 
     master = pd.concat([dx, proc, med, labs], ignore_index=True)
     master["admittime"]   = pd.to_datetime(master["admittime"], errors="coerce")
@@ -521,7 +527,13 @@ def main(
     insert_visit_delimiters: bool = False,
     bucket_labs: bool = False,
     bucket_medications: bool = False,
+    only_abnormal_labs: bool = True,
+    include_all_labs: bool = False,
 ) -> None:
+    if include_all_labs and only_abnormal_labs:
+        raise ValueError("include_all_labs=True and only_abnormal_labs=True are mutually exclusive")
+    _only_abnormal = not include_all_labs
+
     global MAX_SEQ_LEN, MODELING_DIR, OUTPUT_DIR, DATA_DIR, HOSP_DIR
     DATA_DIR = data_dir
     HOSP_DIR = data_dir / "mimic-iv-3.1" / "hosp"
@@ -543,7 +555,9 @@ def main(
     patients_df = _load_patients(subject_ids)
 
     print("Building master EHR event timeline...")
-    master_df, _ = build_master_events(subject_ids, bucket_labs=bucket_labs, bucket_medications=bucket_medications)
+    master_df, _ = build_master_events(subject_ids, bucket_labs=bucket_labs,
+                                       bucket_medications=bucket_medications,
+                                       only_abnormal_labs=_only_abnormal)
     print(f"  {len(master_df):,} total events loaded")
 
     print("Building concept vocabulary...")
@@ -660,6 +674,8 @@ def main(
         "insert_visit_delimiters": insert_visit_delimiters,
         "bucket_labs":             bucket_labs,
         "bucket_medications":      bucket_medications,
+        "only_abnormal_labs":      _only_abnormal,
+        "include_all_labs":        not _only_abnormal,
     }
     with open(OUTPUT_DIR / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
@@ -688,8 +704,13 @@ if __name__ == "__main__":
     p.add_argument("--insert-visit-delimiters", action="store_true", help="Wrap each visit with [V_START]/[V_END] tokens")
     p.add_argument("--bucket-labs",        action="store_true", help="Append per-itemid quantile bucket (Q1-Q4) to lab tokens")
     p.add_argument("--bucket-medications", action="store_true", help="Append per-drug dose-tier bucket (Q1-Q4) to medication tokens")
+    lab_group = p.add_mutually_exclusive_group()
+    lab_group.add_argument("--include-all-labs",    action="store_true", help="Include all lab results regardless of abnormality flag (opposite of default).")
+    lab_group.add_argument("--only-abnormal-labs",  action="store_true", help="Include only flagged-abnormal lab results (default behaviour; explicit form).")
     a = p.parse_args()
     main(data_dir=a.data_dir, cohort_name=a.cohort, output_name=a.name,
          max_seq_len=a.max_seq_len, insert_att=a.insert_att,
          insert_visit_delimiters=a.insert_visit_delimiters,
-         bucket_labs=a.bucket_labs, bucket_medications=a.bucket_medications)
+         bucket_labs=a.bucket_labs, bucket_medications=a.bucket_medications,
+         include_all_labs=a.include_all_labs,
+         only_abnormal_labs=a.only_abnormal_labs)
