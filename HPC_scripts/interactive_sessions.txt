@@ -1,0 +1,4 @@
+salloc -N1 -n1 -cX --mem=XGB --gres=gpu:X -t XX:XX:XX
+salloc -N1 -n1 -cX --mem=XGB --gres=gpu:X -p XXXX -t X:XX:XX 
+squeue --start -j <job_id>
+squeue -u $USER
