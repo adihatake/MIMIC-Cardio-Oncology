@@ -25,6 +25,7 @@ ipykernel==7.2.0
 pyarrow
 fastparquet
 rich
+captum
 
 # ── Mamba SSM (required for run_mamba.py, CUDA-only) ─────────────────────────
 # Official implementation from github.com/state-spaces/mamba.
