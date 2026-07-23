@@ -269,10 +269,17 @@ python model_src/train.py \
 
 | File | Description |
 |---|---|
-| `best_model.pt` | State dict of the best checkpoint (by val AUROC) |
+| `best_model_auroc.pt` | Checkpoint with best val AUROC |
+| `best_model_auprc.pt` | Checkpoint with best val AUPRC |
+| `best_model_f1.pt` | Checkpoint with best val F1 |
+| `best_model_sensitivity.pt` | Checkpoint with best val sensitivity |
+| `best_model_specificity.pt` | Checkpoint with best val specificity |
 | `config.json` | All hyperparameters, derived vocab/seq sizes, hardware info, and run date |
-| `history.json` | Per-epoch train loss, val loss, val AUROC, and elapsed time |
-| `test_metrics.json` | AUROC and loss on the held-out test split |
+| `history.json` | Per-epoch train loss, val loss, val AUROC, AUPRC, F1, sensitivity, specificity, and elapsed time |
+| `test_metrics.json` | Test results for the AUROC checkpoint (backward-compatible) |
+| `test_metrics_{metric}.json` | Test results for each per-metric checkpoint |
+
+Each epoch, the training loop saves a checkpoint whenever a metric improves. The tqdm progress bar shows `auroc`, `auprc`, and a `new=` field listing which checkpoints were just updated. After training, all 5 checkpoints are evaluated on the held-out test set and results are printed as a comparison table.
 
 ---
 
@@ -311,6 +318,9 @@ python interpretation/interpret.py ... --skip-ig
 
 # Show top 20 tokens in bar charts instead of 30
 python interpretation/interpret.py ... --top-k 20
+
+# Use the sensitivity-optimised checkpoint instead of the default AUROC one
+python interpretation/interpret.py ... --checkpoint-metric sensitivity
 ```
 
 **Outputs** (`interpretation/outputs/<subject>_cycle<n>/`):
@@ -385,7 +395,7 @@ Self-attention gives every token access to every other token (O(L²)).
 - Scheduler: CosineAnnealingLR (`T_max=epochs`, `eta_min=lr/10`)
 - Loss: CrossEntropyLoss with inverse-frequency class weights + optional label smoothing
 - Mixed precision: `torch.amp.autocast` + `GradScaler` (CUDA only)
-- Best checkpoint saved by validation AUROC
+- Five checkpoints saved per run: one per metric (`best_model_{auroc/auprc/f1/sensitivity/specificity}.pt`), each updated independently whenever that metric improves
 
 **`return_attention` hook:** `EHR_Encoder.forward()` accepts `return_attention=True`, which returns `(logits, all_attn)` where `all_attn` is a list of `(B, num_heads, seq, seq)` tensors — one per layer. Attention weights are pre-dropout softmax values. Used by `interpretation/interpret.py`.
 
@@ -506,7 +516,7 @@ RUNS = [
 python run_train.py
 ```
 
-Average `test_metrics.json` across seeds to report mean ± std AUROC per ablation.
+Each seed produces `test_metrics_{metric}.json` for each checkpoint. Use `compare_ablations.py` with `--metric` to aggregate across seeds for any metric.
 
 ### `run_mamba.py`
 
@@ -557,7 +567,7 @@ RUNS = [
 
 | Field | Default | Description |
 |---|---|---|
-| `model_dir` | required | Experiment directory with `config.json` + `best_model.pt` |
+| `model_dir` | required | Experiment directory with `config.json` + `best_model_*.pt` checkpoints |
 | `sample_idx` | `None` | Row index in the tokenized dataset |
 | `subject_id` | `None` | MIMIC subject_id (use with `cycle_number`) |
 | `cycle_number` | `None` | Chemotherapy cycle number (use with `subject_id`) |
@@ -567,6 +577,7 @@ RUNS = [
 | `skip_ig` | `False` | Skip IG if captum is not installed |
 | `top_k` | `30` | Top-K tokens in bar charts |
 | `run_visualize` | `True` | Run `visualize_attributions` after `interpret` |
+| `checkpoint_metric` | `"auroc"` | Which checkpoint to load (`best_model_{metric}.pt`); falls back to `best_model.pt` for older runs |
 | `device` | `"auto"` | `auto`, `cpu`, `cuda`, or `mps` |
 
 ### `run_pipeline.py`
@@ -622,47 +633,70 @@ python evaluation/evaluate_model.py --model-dir experiment_outputs/run1 \
     --output-csv experiment_outputs/run1/test_results.csv
 ```
 
-Reports: AUROC, accuracy, precision, recall, F1, confusion matrix.
+Reports: AUROC, AUPRC, F1, sensitivity, specificity, accuracy, precision, confusion matrix. The results panel shows which checkpoint was loaded.
 
 | Argument | Default | Description |
 |---|---|---|
-| `--model-dir` | required | Experiment dir with `config.json` + `best_model.pt` |
+| `--model-dir` | required | Experiment dir with `config.json` + `best_model_*.pt` checkpoints |
 | `--data-dir` | from config | Tokenization directory |
 | `--split` | `test` | `train`, `val`, or `test` |
 | `--batch-size` | `32` | Inference batch size |
-| `--threshold` | `0.5` | Decision threshold |
+| `--threshold` | `0.5` | Decision threshold for F1 / sensitivity / specificity |
+| `--checkpoint-metric` | `auroc` | Which checkpoint to load (`best_model_{metric}.pt`); falls back to `best_model.pt` for older runs |
 | `--output-csv` | — | Optional path to save per-sample results |
 
 ### `evaluation/compare_ablations.py`
 
-Scans an experiment directory for all `test_metrics.json` files, groups by ablation ID, and reports mean ± std AUROC across seeds with a bar chart.
+Scans an experiment directory for test metrics files, groups by ablation ID, and reports mean ± std across seeds for all metrics (AUROC, AUPRC, F1, sensitivity, specificity) with a bar chart.
+
+When `--metric` is set, loads `test_metrics_{metric}.json` (the checkpoint optimised for that metric) and shows that metric's bar chart. Falls back to `test_metrics.json` for older runs.
 
 ```bash
 python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/
-python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/ --sort auroc
+python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/ --sort auprc --metric auprc
 python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/ \
-    --save experiment_outputs/Jul1_ablations/comparison.png
+    --save experiment_outputs/Jul1_ablations/comparison.png --metric f1
 ```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--sort` | `id` | Sort rows by: `id`, `auroc`, `auprc`, `f1`, `sensitivity`, `specificity` |
+| `--metric` | `auroc` | Metric shown in the bar chart; also controls which checkpoint's results are loaded |
+| `--save` | — | Save bar chart to this path (PNG/PDF) |
+| `--no-plot` | off | Print table only, skip the bar chart |
 
 Expected layout:
 ```
 experiment_outputs/Jul1_ablations/
   A0/seed42/test_metrics.json
+  A0/seed42/test_metrics_auprc.json
   A0/seed43/test_metrics.json
-  A1/seed42/test_metrics.json
   ...
 ```
 
 ### `evaluation/plot_history.py`
 
-Plots training loss and validation AUROC curves from `history.json`. Supports comparing multiple runs.
+Plots training loss and per-metric validation curves from `history.json`. Each requested metric gets its own panel with a vertical marker at its best epoch. Supports comparing multiple runs.
 
 ```bash
+# Default panels: loss + AUROC + AUPRC + F1
 python evaluation/plot_history.py --model-dir experiment_outputs/run1
+
+# All five metrics
+python evaluation/plot_history.py --model-dir experiment_outputs/run1 \
+    --metrics auroc auprc f1 sensitivity specificity
+
+# Compare runs
 python evaluation/plot_history.py \
     --model-dir experiment_outputs/run1 experiment_outputs/run2 \
     --save comparison.png
 ```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--metrics` | `auroc auprc f1` | Which validation metrics to plot (one panel each) |
+| `--save` | — | Save figure to this path (PNG/PDF/SVG) |
+| `--figsize` | auto | Figure width and height in inches |
 
 ---
 

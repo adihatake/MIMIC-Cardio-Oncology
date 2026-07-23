@@ -82,16 +82,17 @@ if __name__ == "__main__":
 
         print("── interpret ───────────────────────────────────────────────────────")
         interp_module.explain(
-            model_dir    = cfg.model_dir,
-            data_dir     = cfg.data_dir,
-            sample_idx   = cfg.sample_idx,
-            subject_id   = cfg.subject_id,
-            cycle_number = cfg.cycle_number,
-            output_dir   = output_dir,
-            ig_steps     = cfg.ig_steps,
-            top_k        = cfg.top_k,
-            device       = cfg.device,
-            skip_ig      = cfg.skip_ig,
+            model_dir         = cfg.model_dir,
+            data_dir          = cfg.data_dir,
+            sample_idx        = cfg.sample_idx,
+            subject_id        = cfg.subject_id,
+            cycle_number      = cfg.cycle_number,
+            output_dir        = output_dir,
+            ig_steps          = cfg.ig_steps,
+            top_k             = cfg.top_k,
+            device            = cfg.device,
+            skip_ig           = cfg.skip_ig,
+            checkpoint_metric = cfg.checkpoint_metric,
         )
 
         if cfg.run_visualize:
