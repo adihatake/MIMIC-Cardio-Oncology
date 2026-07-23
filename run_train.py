@@ -51,33 +51,45 @@ import model_src.train as train_module
 
 # ── shared hyperparameters ────────────────────────────────────────────────────
 _BASE = dict(
-    epochs           = 100,
-    batch_size       = 16,
-    lr               = 1e-4,
-    weight_decay     = 5e-2,
-    label_smoothing  = 0.1,
-    d_model          = 64,
-    num_heads        = 4,
-    num_layers       = 1,
-    ff_dim           = 128,
-    dropout          = 0.3,
-    device           = "auto",
-    num_workers      = 2,
-    use_wandb        = False,
+    epochs          = 100,
+    batch_size      = 16,
+    lr              = 1e-4,
+    weight_decay    = 5e-2,
+    label_smoothing = 0.1,
+    dropout         = 0.3,
+    device          = "auto",
+    num_workers     = 2,
+    use_wandb       = False,
+
+    # Embedding config
+    fusion          = "add",
+    use_time        = False,
+    use_age         = False,
+    data_dir        = Path("tokenization_outputs/Jul17_512_all_labs"),
 )
+
+# ── architecture sweep ────────────────────────────────────────────────────────
+# num_heads must divide d_model. ff_dim is kept at 2× d_model throughout.
+ARCH = [
+    ("S", dict(d_model=64,  num_heads=4, num_layers=1, ff_dim=128)),
+    ("M", dict(d_model=128, num_heads=4, num_layers=2, ff_dim=256)),
+    ("L", dict(d_model=128, num_heads=8, num_layers=4, ff_dim=512)),
+]
 
 # ── define runs ───────────────────────────────────────────────────────────────
 
-SEEDS = [42, 43, 44]
+SEEDS = [42, 52, 62, 72, 82]
 RUNS  = []
 
-for s in SEEDS:
-    RUNS.append(TrainConfig(
-        **_BASE,
-        data_dir   = Path("tokenization_outputs/Jul1_512"),
-        seed       = s,
-        output_dir = Path(f"experiment_outputs/test_2/seed{s}"),
-    ))
+for arch_id, arch_kwargs in ARCH:
+    for s in SEEDS:
+        RUNS.append(TrainConfig(
+            **_BASE,
+            **arch_kwargs,
+            seed       = s,
+            output_dir = Path(f"experiment_outputs/arch_sweep/{arch_id}/seed{s}"),
+            run_name   = f"arch-{arch_id}-seed{s}",
+        ))
 
 # ── run ───────────────────────────────────────────────────────────────────────
 
