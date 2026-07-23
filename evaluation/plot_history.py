@@ -139,7 +139,7 @@ def plot(
     ]
     fig.legend(handles=seed_handles + style_handles,
                loc="center left", fontsize=8,
-               bbox_to_anchor=(1.0, 0.5), borderaxespad=0.5,
+               bbox_to_anchor=(0.88, 0.5), borderaxespad=0.5,
                framealpha=0.95, edgecolor="0.8")
 
     # ── loss panel ────────────────────────────────────────────────────────────
