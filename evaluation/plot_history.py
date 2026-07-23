@@ -91,27 +91,25 @@ def plot(
     ax_loss      = axes[0]
     metric_axes  = axes[1:]
 
-    colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    colors   = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    best_ann: dict[str, list[tuple[str, float, int]]] = {m: [] for m in metrics}
 
     for i, model_dir in enumerate(model_dirs):
-        history = _load_history(model_dir)
+        history  = _load_history(model_dir)
         cfg      = None
         cfg_path = model_dir / "config.json"
         if cfg_path.exists():
             with open(cfg_path) as f:
                 cfg = json.load(f)
 
-        label = _run_label(model_dir, cfg)
-        color = colors[i % len(colors)]
+        label  = _run_label(model_dir, cfg)
+        color  = colors[i % len(colors)]
         epochs = [h["epoch"] for h in history]
 
-        train_loss = [h["train_loss"] for h in history]
-        val_loss   = [h["loss"]       for h in history]
-
-        ax_loss.plot(epochs, train_loss, color=color, linestyle="--", alpha=0.7,
-                     label=f"{label} — train")
-        ax_loss.plot(epochs, val_loss,   color=color, linestyle="-",
-                     label=f"{label} — val")
+        ax_loss.plot(epochs, [h["train_loss"] for h in history],
+                     color=color, linestyle="--", alpha=0.7)
+        ax_loss.plot(epochs, [h["loss"] for h in history],
+                     color=color, linestyle="-")
 
         for ax, metric in zip(metric_axes, metrics):
             if metric not in history[0]:
@@ -123,13 +121,26 @@ def plot(
             best_epoch = max(history, key=lambda h: h.get(metric, float("-inf")))["epoch"]
             best_val   = max(h.get(metric, float("-inf")) for h in history)
 
-            ax.plot(epochs, vals, color=color, linestyle="-",
-                    label=f"{label}  ({best_val:.3f} @ ep{best_epoch})")
+            ax.plot(epochs, vals, color=color, linestyle="-")
             ax.axvline(best_epoch, color=color, linestyle=":", alpha=0.4, linewidth=0.8)
+            best_ann[metric].append((label, best_val, best_epoch))
 
-    _legend_kw = dict(fontsize=8, loc="upper left",
-                      bbox_to_anchor=(1.02, 1), borderaxespad=0,
-                      framealpha=0.9, edgecolor="0.8")
+    # ── one shared legend (right of figure) ───────────────────────────────────
+    from matplotlib.lines import Line2D
+    seed_handles = [
+        Line2D([0], [0], color=colors[i % len(colors)], lw=1.5,
+               label=_run_label(model_dirs[i], None))
+        for i in range(n_runs)
+    ]
+    style_handles = [
+        Line2D([0], [0], color="k", lw=1.5, ls="-",  label="validation"),
+        Line2D([0], [0], color="k", lw=1.5, ls="--", alpha=0.7, label="train (loss)"),
+        Line2D([0], [0], color="gray", lw=0.8, ls="--", label="random (0.5)"),
+    ]
+    fig.legend(handles=seed_handles + style_handles,
+               loc="center left", fontsize=8,
+               bbox_to_anchor=(1.0, 0.5), borderaxespad=0.5,
+               framealpha=0.95, edgecolor="0.8")
 
     # ── loss panel ────────────────────────────────────────────────────────────
     ax_loss.set_title("Loss", fontsize=13, fontweight="bold")
@@ -137,20 +148,24 @@ def plot(
     ax_loss.set_ylabel("Cross-entropy loss")
     ax_loss.xaxis.set_major_locator(ticker.MaxNLocator(nbins=6, integer=True))
     ax_loss.grid(alpha=0.3)
-    ax_loss.legend(**_legend_kw)
 
     # ── metric panels ─────────────────────────────────────────────────────────
+    _ann_kw = dict(fontsize=7, family="monospace", va="top", ha="right",
+                   bbox=dict(boxstyle="round,pad=0.3", fc="white", alpha=0.85, ec="0.8"))
     for ax, metric in zip(metric_axes, metrics):
         ax.set_title(METRIC_LABELS.get(metric, metric), fontsize=13, fontweight="bold")
         ax.set_xlabel("Epoch")
         ax.set_ylabel(metric.upper())
         ax.set_ylim(0, 1)
-        ax.axhline(0.5, color="gray", linestyle="--", linewidth=0.8, label="random (0.5)")
+        ax.axhline(0.5, color="gray", linestyle="--", linewidth=0.8)
         ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=6, integer=True))
         ax.grid(alpha=0.3)
-        ax.legend(**_legend_kw)
+        if best_ann[metric]:
+            txt = "\n".join(f"{lbl}: {bv:.3f} @ ep{be}"
+                            for lbl, bv, be in best_ann[metric])
+            ax.text(0.97, 0.97, txt, transform=ax.transAxes, **_ann_kw)
 
-    fig.tight_layout(rect=[0, 0, 0.88, 1])
+    fig.tight_layout(rect=[0, 0, 0.87, 1])
 
     if save_path:
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
