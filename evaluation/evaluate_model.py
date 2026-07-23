@@ -72,7 +72,11 @@ def _load_data(data_dir: Path, seed: int):
     return row_indices, samples_meta, tensors
 
 
-def _load_model(model_dir: Path, device: torch.device) -> tuple[EHR_Encoder, dict]:
+def _load_model(
+    model_dir:         Path,
+    device:            torch.device,
+    checkpoint_metric: str = "auroc",
+) -> tuple[EHR_Encoder, dict, str]:
     with open(model_dir / "config.json") as f:
         cfg = json.load(f)
 
@@ -90,10 +94,15 @@ def _load_model(model_dir: Path, device: torch.device) -> tuple[EHR_Encoder, dic
         use_age  = cfg.get("use_age",  False),
     ).to(device)
 
-    ckpt = model_dir / "best_model.pt"
+    # prefer best_model_{metric}.pt; fall back to best_model.pt for older runs
+    ckpt_name  = f"best_model_{checkpoint_metric}.pt"
+    ckpt       = model_dir / ckpt_name
+    if not ckpt.exists():
+        ckpt      = model_dir / "best_model.pt"
+        ckpt_name = "best_model.pt"
     model.load_state_dict(torch.load(ckpt, map_location=device, weights_only=True))
     model.eval()
-    return model, cfg
+    return model, cfg, ckpt_name
 
 
 # ── inference ─────────────────────────────────────────────────────────────────
@@ -132,30 +141,35 @@ def _run_inference(
 
 def _compute_metrics(labels: list[int], probs: list[float], threshold: float = 0.5) -> dict:
     from sklearn.metrics import (
-        roc_auc_score, accuracy_score,
+        roc_auc_score, average_precision_score, accuracy_score,
         precision_recall_fscore_support, confusion_matrix,
     )
 
     preds = [1 if p >= threshold else 0 for p in probs]
 
     auroc    = roc_auc_score(labels, probs)
+    auprc    = average_precision_score(labels, probs, pos_label=1)
     accuracy = accuracy_score(labels, preds)
     prec, rec, f1, _ = precision_recall_fscore_support(
-        labels, preds, average="binary", zero_division=0
+        labels, preds, average="binary", pos_label=1, zero_division=0
     )
-    cm = confusion_matrix(labels, preds)
+    cm = confusion_matrix(labels, preds, labels=[0, 1])
+    tn, fp, fn, tp = cm.ravel()
+    specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
 
     return {
-        "auroc":      auroc,
-        "accuracy":   accuracy,
-        "precision":  prec,
-        "recall":     rec,
-        "f1":         f1,
-        "cm":         cm.tolist(),
-        "threshold":  threshold,
-        "n_samples":  len(labels),
-        "n_positive": sum(labels),
-        "n_negative": len(labels) - sum(labels),
+        "auroc":       auroc,
+        "auprc":       auprc,
+        "accuracy":    accuracy,
+        "precision":   prec,
+        "sensitivity": rec,   # TP / (TP + FN)
+        "specificity": specificity,  # TN / (TN + FP)
+        "f1":          f1,
+        "cm":          cm.tolist(),
+        "threshold":   threshold,
+        "n_samples":   len(labels),
+        "n_positive":  sum(labels),
+        "n_negative":  len(labels) - sum(labels),
     }
 
 
@@ -170,6 +184,7 @@ def _display_results(
     probs:        list[float],
     model_dir:    Path,
     max_rows:     int,
+    ckpt_name:    str = "best_model.pt",
 ) -> None:
     from rich.console import Console
     from rich.table import Table
@@ -183,16 +198,19 @@ def _display_results(
     fn, tp = cm[1][0], cm[1][1]
 
     summary = (
-        f"[bold]Model:[/]     {model_dir}\n"
-        f"[bold]Split:[/]     {split}  "
+        f"[bold]Model:[/]      {model_dir}\n"
+        f"[bold]Checkpoint:[/] [yellow]{ckpt_name}[/]\n"
+        f"[bold]Split:[/]      {split}  "
         f"({metrics['n_samples']} samples: "
         f"{metrics['n_positive']} pos / {metrics['n_negative']} neg)\n\n"
-        f"[bold]AUROC:[/]     [cyan]{metrics['auroc']:.4f}[/]\n"
-        f"[bold]Accuracy:[/]  {metrics['accuracy']:.4f}  "
+        f"[bold]AUROC:[/]       [cyan]{metrics['auroc']:.4f}[/]\n"
+        f"[bold]AUPRC:[/]       [cyan]{metrics['auprc']:.4f}[/]\n"
+        f"[bold]Accuracy:[/]    {metrics['accuracy']:.4f}  "
         f"(threshold = {metrics['threshold']})\n"
-        f"[bold]Precision:[/] {metrics['precision']:.4f}   "
-        f"[bold]Recall:[/] {metrics['recall']:.4f}   "
-        f"[bold]F1:[/] {metrics['f1']:.4f}\n\n"
+        f"[bold]Precision:[/]   {metrics['precision']:.4f}   "
+        f"[bold]F1:[/] {metrics['f1']:.4f}\n"
+        f"[bold]Sensitivity:[/] {metrics['sensitivity']:.4f}   "
+        f"[bold]Specificity:[/] {metrics['specificity']:.4f}\n\n"
         f"[bold]Confusion matrix[/] (rows = true, cols = pred):\n"
         f"  TN={tn}  FP={fp}\n"
         f"  FN={fn}  TP={tp}"
@@ -292,7 +310,7 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--model-dir",   required=True,
-                   help="Experiment dir with config.json + best_model.pt.")
+                   help="Experiment dir with config.json and best_model_*.pt checkpoints.")
     p.add_argument("--data-dir",    default=None,
                    help="Data dir (default: read from model config.json).")
     p.add_argument("--split",       default="test", choices=["train", "val", "test"])
@@ -305,6 +323,10 @@ def parse_args() -> argparse.Namespace:
                    help="Optional path to save per-sample results as CSV.")
     p.add_argument("--device",      default="auto",
                    help="'auto', 'cpu', 'cuda', or 'mps'.")
+    p.add_argument("--checkpoint-metric", default="auroc", dest="checkpoint_metric",
+                   choices=["auroc", "auprc", "f1", "sensitivity", "specificity"],
+                   help="Which per-metric checkpoint to load (best_model_{metric}.pt). "
+                        "Falls back to best_model.pt for older runs.")
     return p.parse_args()
 
 
@@ -320,10 +342,9 @@ def main() -> None:
     args      = parse_args()
     model_dir = Path(args.model_dir)
 
-    for required in ("config.json", "best_model.pt"):
-        if not (model_dir / required).exists():
-            print(f"Missing {required} in {model_dir}")
-            sys.exit(1)
+    if not (model_dir / "config.json").exists():
+        print(f"Missing config.json in {model_dir}")
+        sys.exit(1)
 
     if args.device == "auto":
         device = torch.device(
@@ -336,8 +357,8 @@ def main() -> None:
 
     print(f"Device: {device}")
 
-    model, cfg = _load_model(model_dir, device)
-    print(f"Loaded checkpoint from {model_dir / 'best_model.pt'}")
+    model, cfg, ckpt_name = _load_model(model_dir, device, args.checkpoint_metric)
+    print(f"Loaded checkpoint: {ckpt_name}")
 
     data_dir_str = args.data_dir or cfg.get("data_dir")
     if not data_dir_str:
@@ -355,7 +376,7 @@ def main() -> None:
 
     _display_results(
         metrics, args.split, split_rows, samples_meta,
-        labels, probs, model_dir, args.max_rows,
+        labels, probs, model_dir, args.max_rows, ckpt_name,
     )
 
     if args.output_csv:

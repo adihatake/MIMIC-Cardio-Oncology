@@ -26,6 +26,9 @@ class InterpretationConfig:
     top_k:        int  = 30    # top-K tokens shown in bar charts
     run_visualize: bool = True  # run visualize_attributions after explain
 
+    # ── checkpoint ────────────────────────────────────────────────────────────
+    checkpoint_metric: str = "auroc"   # which best_model_{metric}.pt to load
+
     # ── compute ───────────────────────────────────────────────────────────────
     device: str = "auto"
 

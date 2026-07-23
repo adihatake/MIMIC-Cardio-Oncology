@@ -106,7 +106,11 @@ EVENT_TYPE_COLORS: dict[str, str] = {
 
 # ── Model and data loading ────────────────────────────────────────────────────
 
-def _load_model(model_dir: Path, device: torch.device) -> tuple[EHR_Encoder, dict]:
+def _load_model(
+    model_dir:         Path,
+    device:            torch.device,
+    checkpoint_metric: str = "auroc",
+) -> tuple[EHR_Encoder, dict, str]:
     with open(model_dir / "config.json") as f:
         cfg = json.load(f)
     model = EHR_Encoder(
@@ -122,11 +126,16 @@ def _load_model(model_dir: Path, device: torch.device) -> tuple[EHR_Encoder, dic
         use_time       = cfg.get("use_time", False),
         use_age        = cfg.get("use_age",  False),
     ).to(device)
+    ckpt_name = f"best_model_{checkpoint_metric}.pt"
+    ckpt      = model_dir / ckpt_name
+    if not ckpt.exists():
+        ckpt      = model_dir / "best_model.pt"
+        ckpt_name = "best_model.pt"
     model.load_state_dict(
-        torch.load(model_dir / "best_model.pt", map_location=device, weights_only=True)
+        torch.load(ckpt, map_location=device, weights_only=True)
     )
     model.eval()
-    return model, cfg
+    return model, cfg, ckpt_name
 
 
 def _load_tensors(data_dir: Path) -> dict[str, torch.Tensor]:
@@ -439,16 +448,17 @@ def save_attributions_csv(
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def explain(
-    model_dir:    Path,
-    data_dir:     Path,
-    sample_idx:   int | None,
-    subject_id:   int | None,
-    cycle_number: int | None,
-    output_dir:   Path,
-    ig_steps:     int  = 100,
-    top_k:        int  = 30,
-    device:       str  = "auto",
-    skip_ig:      bool = False,
+    model_dir:         Path,
+    data_dir:          Path,
+    sample_idx:        int | None,
+    subject_id:        int | None,
+    cycle_number:      int | None,
+    output_dir:        Path,
+    ig_steps:          int  = 100,
+    top_k:             int  = 30,
+    device:            str  = "auto",
+    skip_ig:           bool = False,
+    checkpoint_metric: str  = "auroc",
 ) -> None:
 
     if device == "auto":
@@ -463,11 +473,12 @@ def explain(
     print(f"Device       : {_device}")
 
     # ── load model + data ────────────────────────────────────────────────────
-    model, cfg = _load_model(model_dir, _device)
+    model, cfg, ckpt_name = _load_model(model_dir, _device, checkpoint_metric)
     num_layers = cfg["num_layers"]
     num_heads  = cfg["num_heads"]
     print(f"Model        : {model_dir.name}  "
           f"({num_layers}L × {num_heads}H × {cfg['d_model']}d)")
+    print(f"Checkpoint   : {ckpt_name}")
 
     tensors      = _load_tensors(data_dir)
     samples_meta = _load_samples_meta(data_dir)
@@ -599,7 +610,7 @@ def _parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--model-dir", required=True,
-        help="Experiment directory containing config.json + best_model.pt",
+        help="Experiment directory containing config.json and best_model_*.pt checkpoints.",
     )
     p.add_argument(
         "--data-dir", default=None,
@@ -637,6 +648,12 @@ def _parse_args() -> argparse.Namespace:
         "--device", default="auto",
         help="Device: 'auto', 'cpu', 'cuda', or 'mps'",
     )
+    p.add_argument(
+        "--checkpoint-metric", default="auroc", dest="checkpoint_metric",
+        choices=["auroc", "auprc", "f1", "sensitivity", "specificity"],
+        help="Which per-metric checkpoint to load (best_model_{metric}.pt). "
+             "Falls back to best_model.pt for older runs.",
+    )
     return p.parse_args()
 
 
@@ -644,10 +661,17 @@ def main() -> None:
     args      = _parse_args()
     model_dir = Path(args.model_dir)
 
-    for required in ("config.json", "best_model.pt"):
-        if not (model_dir / required).exists():
-            print(f"Missing {required} in {model_dir}")
-            sys.exit(1)
+    if not (model_dir / "config.json").exists():
+        print(f"Missing config.json in {model_dir}")
+        sys.exit(1)
+
+    ckpt = model_dir / f"best_model_{args.checkpoint_metric}.pt"
+    if not ckpt.exists():
+        ckpt = model_dir / "best_model.pt"
+    if not ckpt.exists():
+        print(f"No checkpoint found in {model_dir}. "
+              f"Expected best_model_{args.checkpoint_metric}.pt or best_model.pt.")
+        sys.exit(1)
 
     with open(model_dir / "config.json") as f:
         cfg = json.load(f)
@@ -675,16 +699,17 @@ def main() -> None:
         sys.exit(1)
 
     explain(
-        model_dir    = model_dir,
-        data_dir     = data_dir,
-        sample_idx   = args.sample_idx,
-        subject_id   = args.subject_id,
-        cycle_number = args.cycle_number,
-        output_dir   = output_dir,
-        ig_steps     = args.ig_steps,
-        top_k        = args.top_k,
-        device       = args.device,
-        skip_ig      = args.skip_ig,
+        model_dir          = model_dir,
+        data_dir           = data_dir,
+        sample_idx         = args.sample_idx,
+        subject_id         = args.subject_id,
+        cycle_number       = args.cycle_number,
+        output_dir         = output_dir,
+        ig_steps           = args.ig_steps,
+        top_k              = args.top_k,
+        device             = args.device,
+        skip_ig            = args.skip_ig,
+        checkpoint_metric  = args.checkpoint_metric,
     )
 
 

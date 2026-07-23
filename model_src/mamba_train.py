@@ -31,7 +31,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import wandb
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import (
+    roc_auc_score, average_precision_score,
+    precision_recall_fscore_support, confusion_matrix,
+)
 from torch.amp import GradScaler, autocast
 from torch.optim import AdamW
 from tqdm.auto import tqdm
@@ -99,10 +102,25 @@ def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.devic
     avg_loss = total_loss / n
     try:
         auroc = roc_auc_score(all_labels, all_probs)
+        auprc = average_precision_score(all_labels, all_probs, pos_label=1)
+        preds = [1 if p >= 0.5 else 0 for p in all_probs]
+        _, sensitivity, f1, _ = precision_recall_fscore_support(
+            all_labels, preds, average="binary", pos_label=1, zero_division=0
+        )
+        cm = confusion_matrix(all_labels, preds, labels=[0, 1])
+        tn, fp = cm[0, 0], cm[0, 1]
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
     except ValueError:
-        auroc = float("nan")
+        auroc, auprc, f1, sensitivity, specificity = (float("nan"),) * 5
 
-    return {"loss": avg_loss, "auroc": auroc}
+    return {
+        "loss":        avg_loss,
+        "auroc":       auroc,
+        "auprc":       auprc,
+        "f1":          f1,
+        "sensitivity": sensitivity,
+        "specificity": specificity,
+    }
 
 
 # ── training loop ─────────────────────────────────────────────────────────────
@@ -204,9 +222,10 @@ def train(args: argparse.Namespace | object) -> None:
         )
         wandb.watch(model, log="gradients", log_freq=100)
 
-    best_auroc = -1.0
-    best_epoch = -1
-    history    = []
+    CKPT_METRICS = ["auroc", "auprc", "f1", "sensitivity", "specificity"]
+    best_scores  = {m: -1.0 for m in CKPT_METRICS}
+    best_epochs  = {m: -1   for m in CKPT_METRICS}
+    history      = []
 
     epoch_bar = tqdm(range(1, args.epochs + 1), desc="Training", unit="epoch")
 
@@ -244,13 +263,21 @@ def train(args: argparse.Namespace | object) -> None:
         avg_train_loss = train_loss / n
         val_metrics    = evaluate(model, val_dl, criterion, device)
         elapsed        = time.time() - t0
-        is_best        = val_metrics["auroc"] > best_auroc
+
+        updated = []
+        for m in CKPT_METRICS:
+            if val_metrics[m] > best_scores[m]:
+                best_scores[m] = val_metrics[m]
+                best_epochs[m] = epoch
+                torch.save(model.state_dict(), output_dir / f"best_model_{m}.pt")
+                updated.append(m)
 
         epoch_bar.set_postfix(
-            train_loss = f"{avg_train_loss:.4f}",
-            val_loss   = f"{val_metrics['loss']:.4f}",
-            auroc      = f"{val_metrics['auroc']:.4f}",
-            best       = f"epoch {epoch} ✓" if is_best else f"epoch {best_epoch}",
+            loss    = f"{avg_train_loss:.4f}",
+            val_loss= f"{val_metrics['loss']:.4f}",
+            auroc   = f"{val_metrics['auroc']:.4f}",
+            auprc   = f"{val_metrics['auprc']:.4f}",
+            new     = ",".join(updated) if updated else "—",
         )
 
         row = {"epoch": epoch, "train_loss": avg_train_loss, **val_metrics, "elapsed": elapsed}
@@ -258,34 +285,55 @@ def train(args: argparse.Namespace | object) -> None:
 
         if args.use_wandb:
             wandb.log({
-                "train/loss": avg_train_loss,
-                "val/loss":   val_metrics["loss"],
-                "val/auroc":  val_metrics["auroc"],
-                "lr":         scheduler.get_last_lr()[0],
-                "epoch":      epoch,
+                "train/loss":      avg_train_loss,
+                "val/loss":        val_metrics["loss"],
+                "val/auroc":       val_metrics["auroc"],
+                "val/auprc":       val_metrics["auprc"],
+                "val/f1":          val_metrics["f1"],
+                "val/sensitivity": val_metrics["sensitivity"],
+                "val/specificity": val_metrics["specificity"],
+                "lr":              scheduler.get_last_lr()[0],
+                "epoch":           epoch,
             })
 
-        if is_best:
-            best_auroc = val_metrics["auroc"]
-            best_epoch = epoch
-            torch.save(model.state_dict(), output_dir / "best_model.pt")
-
-    print(f"\nBest val AUROC {best_auroc:.4f} at epoch {best_epoch}")
-    print(f"Checkpoint: {output_dir / 'best_model.pt'}")
+    print("\nBest validation scores:")
+    col_w = max(len(m) for m in CKPT_METRICS)
+    for m in CKPT_METRICS:
+        print(f"  {m:<{col_w}}  {best_scores[m]:.4f}  (epoch {best_epochs[m]})")
 
     with open(output_dir / "history.json", "w") as f:
         json.dump(history, f, indent=2)
 
-    model.load_state_dict(torch.load(output_dir / "best_model.pt", weights_only=True))
-    test_metrics = evaluate(model, test_dl, criterion, device)
-    print(f"Test  AUROC  {test_metrics['auroc']:.4f}  |  loss {test_metrics['loss']:.4f}")
+    # Evaluate each per-metric checkpoint on held-out test set
+    print("\nTest results by checkpoint:")
+    header_metrics = ["auroc", "auprc", "f1", "sensitivity", "specificity", "loss"]
+    print(f"  {'ckpt':<12}" + "".join(f"  {h:>8}" for h in header_metrics))
+    print("  " + "─" * (12 + len(header_metrics) * 10))
+
+    all_test_metrics: dict[str, dict] = {}
+    for m in CKPT_METRICS:
+        model.load_state_dict(
+            torch.load(output_dir / f"best_model_{m}.pt", weights_only=True)
+        )
+        tm = evaluate(model, test_dl, criterion, device)
+        all_test_metrics[m] = tm
+        with open(output_dir / f"test_metrics_{m}.json", "w") as f:
+            json.dump(tm, f, indent=2)
+        row_str = "".join(f"  {tm[h]:>8.4f}" for h in header_metrics)
+        print(f"  {m:<12}{row_str}")
+
+        if args.use_wandb:
+            wandb.log({f"test_{m}_ckpt/{k}": v for k, v in tm.items()
+                       if isinstance(v, (int, float))})
+
+    # test_metrics.json = auroc checkpoint for backward compat
     with open(output_dir / "test_metrics.json", "w") as f:
-        json.dump(test_metrics, f, indent=2)
+        json.dump(all_test_metrics["auroc"], f, indent=2)
 
     if args.use_wandb:
-        wandb.log({"test/auroc": test_metrics["auroc"], "test/loss": test_metrics["loss"]})
-        artifact = wandb.Artifact("best_model", type="model")
-        artifact.add_file(str(output_dir / "best_model.pt"))
+        artifact = wandb.Artifact("best_models", type="model")
+        for m in CKPT_METRICS:
+            artifact.add_file(str(output_dir / f"best_model_{m}.pt"))
         wandb.log_artifact(artifact)
         wandb.finish()
 

@@ -20,8 +20,9 @@ Usage:
 
 Results are written to:
     experiment_outputs/<experiment>/XGB-<variant>/seed<N>/
-        test_metrics.json   — {"auroc": ..., "loss": ...}
-        config.json         — hyperparameters + feature info
+        test_metrics.json          — all metrics for the primary (AUROC) run
+        test_metrics_{metric}.json — per-metric checkpoint results (auroc/auprc/f1/sensitivity/specificity)
+        config.json                — hyperparameters + feature info
 
 Run compare_ablations.py on the output folder to compare with the transformer:
     python evaluation/compare_ablations.py experiment_outputs/<experiment>/
@@ -41,7 +42,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.metrics import log_loss, roc_auc_score
+from sklearn.metrics import (
+    log_loss, roc_auc_score, average_precision_score,
+    precision_recall_fscore_support, confusion_matrix,
+)
 from sklearn.preprocessing import StandardScaler
 import xgboost as xgb
 
@@ -248,16 +252,32 @@ def run_one(
 
     probs      = model.predict_proba(X_test)[:, 1]
     test_auroc = float(roc_auc_score(y_test, probs))
+    test_auprc = float(average_precision_score(y_test, probs, pos_label=1))
     test_loss  = float(log_loss(y_test, probs))
+    preds_hard = (probs >= 0.5).astype(int)
+    _, test_sensitivity, test_f1, _ = precision_recall_fscore_support(
+        y_test, preds_hard, average="binary", pos_label=1, zero_division=0
+    )
+    cm = confusion_matrix(y_test, preds_hard, labels=[0, 1])
+    tn, fp = cm[0, 0], cm[0, 1]
+    test_specificity = float(tn / (tn + fp)) if (tn + fp) > 0 else 0.0
 
     elapsed = time.time() - t0
-    print(f"    seed={seed}  AUROC={test_auroc:.4f}  loss={test_loss:.4f}  "
+    print(f"    seed={seed}  AUROC={test_auroc:.4f}  AUPRC={test_auprc:.4f}  "
+          f"F1={test_f1:.4f}  loss={test_loss:.4f}  "
           f"best_iter={model.best_iteration}  ({elapsed:.1f}s)")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
     with open(output_dir / "test_metrics.json", "w") as f:
-        json.dump({"auroc": test_auroc, "loss": test_loss}, f, indent=2)
+        json.dump({
+            "auroc":       test_auroc,
+            "auprc":       test_auprc,
+            "f1":          float(test_f1),
+            "sensitivity": float(test_sensitivity),
+            "specificity": test_specificity,
+            "loss":        test_loss,
+        }, f, indent=2)
 
     cfg = {
         "variant":  variant,
@@ -278,7 +298,14 @@ def run_one(
     with open(output_dir / "config.json", "w") as f:
         json.dump(cfg, f, indent=2)
 
-    return {"auroc": test_auroc, "loss": test_loss}
+    return {
+        "auroc":       test_auroc,
+        "auprc":       test_auprc,
+        "f1":          float(test_f1),
+        "sensitivity": float(test_sensitivity),
+        "specificity": test_specificity,
+        "loss":        test_loss,
+    }
 
 
 # ── main ──────────────────────────────────────────────────────────────────────
@@ -361,7 +388,7 @@ def main() -> None:
           f"→ {len(args.variants) * len(args.seeds)} total runs")
     print(f"Output root: {out_root}\n")
 
-    all_results: dict[str, list[float]] = {}
+    all_results: dict[str, list[dict]] = {}
 
     for variant, X in feature_matrices.items():
         label = f"XGB-{variant}"
@@ -381,18 +408,27 @@ def main() -> None:
                 output_dir  = out_dir,
                 xgb_params  = XGB_PARAMS,
             )
-            all_results[label].append(metrics["auroc"])
+            all_results[label].append(metrics)
 
-        aurocs = all_results[label]
-        print(f"  → mean AUROC = {np.mean(aurocs):.4f} ± {np.std(aurocs):.4f}\n")
+        runs = all_results[label]
+        print(f"  → mean AUROC={np.mean([r['auroc'] for r in runs]):.4f}  "
+              f"AUPRC={np.mean([r['auprc'] for r in runs]):.4f}  "
+              f"F1={np.mean([r['f1'] for r in runs]):.4f}\n")
 
     # ── summary ───────────────────────────────────────────────────────────────
-    print("=" * 55)
-    print("Summary (mean ± std AUROC across seeds)")
-    print("=" * 55)
-    for label, aurocs in all_results.items():
-        print(f"  {label:<20}  {np.mean(aurocs):.4f} ± {np.std(aurocs):.4f}")
-    print("=" * 55)
+    print("=" * 70)
+    print(f"{'Label':<20}  {'AUROC':>10}  {'AUPRC':>10}  {'F1':>8}  {'Sens':>8}  {'Spec':>8}")
+    print("=" * 70)
+    for label, runs in all_results.items():
+        print(
+            f"  {label:<20}"
+            f"  {np.mean([r['auroc'] for r in runs]):.4f}±{np.std([r['auroc'] for r in runs]):.4f}"
+            f"  {np.mean([r['auprc'] for r in runs]):.4f}±{np.std([r['auprc'] for r in runs]):.4f}"
+            f"  {np.mean([r['f1'] for r in runs]):.4f}"
+            f"  {np.mean([r['sensitivity'] for r in runs]):.4f}"
+            f"  {np.mean([r['specificity'] for r in runs]):.4f}"
+        )
+    print("=" * 70)
     print(f"\nTo compare with transformer ablations:")
     print(f"  python evaluation/compare_ablations.py {out_root}")
 

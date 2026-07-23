@@ -71,7 +71,7 @@ _BASE = dict(
 # the recurrence treats all steps as equally spaced without it.
 #
 # Compare results with:
-#   python evaluation/compare_ablations.py experiment_outputs/Jul3/mamba_A3/ --sort auroc
+#   python evaluation/compare_ablations.py experiment_outputs/Jul3/mamba_A3/ --sort auroc --metric auroc
 
 SEEDS = [42, 43, 44, 45, 46]
 RUNS  = []
