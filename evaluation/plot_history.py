@@ -50,10 +50,15 @@ def _load_history(model_dir: Path) -> list[dict]:
 
 
 def _run_label(model_dir: Path, cfg: dict | None) -> str:
-    label = model_dir.name
+    """Short label for legend entries — just the run name."""
+    return model_dir.name
+
+
+def _arch_subtitle(cfg: dict | None) -> str:
+    """One-line architecture string for use in panel subtitles."""
     if cfg:
-        label += f"  (d={cfg.get('d_model','?')} L={cfg.get('num_layers','?')})"
-    return label
+        return f"d={cfg.get('d_model','?')} L={cfg.get('num_layers','?')}"
+    return ""
 
 
 def plot(
@@ -76,7 +81,7 @@ def plot(
     n_rows    = 1
 
     if figsize is None:
-        figsize = (max(16, n_cols * 4.5), max(5, n_runs * 1.5 + 3))
+        figsize = (max(20, n_cols * 6.0), max(6, n_runs * 1.2 + 4))
 
     fig, axes = plt.subplots(n_rows, n_cols, figsize=figsize)
     if n_cols == 1:
@@ -96,8 +101,8 @@ def plot(
             with open(cfg_path) as f:
                 cfg = json.load(f)
 
-        label  = _run_label(model_dir, cfg)
-        color  = colors[i % len(colors)]
+        label = _run_label(model_dir, cfg)
+        color = colors[i % len(colors)]
         epochs = [h["epoch"] for h in history]
 
         train_loss = [h["train_loss"] for h in history]
@@ -119,16 +124,20 @@ def plot(
             best_val   = max(h.get(metric, float("-inf")) for h in history)
 
             ax.plot(epochs, vals, color=color, linestyle="-",
-                    label=f"{label}  (best={best_val:.4f} @ ep{best_epoch})")
-            ax.axvline(best_epoch, color=color, linestyle=":", alpha=0.5)
+                    label=f"{label}  ({best_val:.3f} @ ep{best_epoch})")
+            ax.axvline(best_epoch, color=color, linestyle=":", alpha=0.4, linewidth=0.8)
+
+    _legend_kw = dict(fontsize=8, loc="upper left",
+                      bbox_to_anchor=(1.02, 1), borderaxespad=0,
+                      framealpha=0.9, edgecolor="0.8")
 
     # ── loss panel ────────────────────────────────────────────────────────────
     ax_loss.set_title("Loss", fontsize=13, fontweight="bold")
     ax_loss.set_xlabel("Epoch")
     ax_loss.set_ylabel("Cross-entropy loss")
-    ax_loss.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+    ax_loss.xaxis.set_major_locator(ticker.MaxNLocator(nbins=6, integer=True))
     ax_loss.grid(alpha=0.3)
-    ax_loss.legend(fontsize=8, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
+    ax_loss.legend(**_legend_kw)
 
     # ── metric panels ─────────────────────────────────────────────────────────
     for ax, metric in zip(metric_axes, metrics):
@@ -137,11 +146,11 @@ def plot(
         ax.set_ylabel(metric.upper())
         ax.set_ylim(0, 1)
         ax.axhline(0.5, color="gray", linestyle="--", linewidth=0.8, label="random (0.5)")
-        ax.xaxis.set_major_locator(ticker.MaxNLocator(integer=True))
+        ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=6, integer=True))
         ax.grid(alpha=0.3)
-        ax.legend(fontsize=8, loc="upper left", bbox_to_anchor=(1.02, 1), borderaxespad=0)
+        ax.legend(**_legend_kw)
 
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0, 0.88, 1])
 
     if save_path:
         fig.savefig(save_path, dpi=dpi, bbox_inches="tight")
