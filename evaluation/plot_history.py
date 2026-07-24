@@ -201,7 +201,8 @@ def plot(
         ax.set_xlabel("Epoch")
         ax.set_ylabel(metric.upper())
         ax.set_ylim(0, 1)
-        ax.axhline(0.5, color="gray", ls="--", lw=0.8)
+        if metric == "auroc":
+            ax.axhline(0.5, color="gray", ls="--", lw=0.8)
         ax.xaxis.set_major_locator(ticker.MaxNLocator(nbins=6, integer=True))
         ax.grid(alpha=0.3)
         if best_ann[metric]:
@@ -230,7 +231,8 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--model-dir", nargs="+", required=True,
                    help="Variant directory (parent of seed* dirs) or a single seed dir.")
-    p.add_argument("--metrics", nargs="+", default=["auroc", "auprc", "f1"],
+    p.add_argument("--metrics", nargs="+",
+                   default=["auroc", "auprc", "f1", "sensitivity", "specificity"],
                    choices=ALL_METRICS,
                    help="Validation metrics to plot (one panel each).")
     p.add_argument("--save",  default=None,

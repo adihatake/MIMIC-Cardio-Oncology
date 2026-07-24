@@ -29,7 +29,7 @@ from evaluation.plot_history import plot
 # ── paths ─────────────────────────────────────────────────────────────────────
 OUT_ROOT   = Path("experiment_outputs/July23")
 SAVE_DIR   = OUT_ROOT / "comparisons"
-METRICS    = ["auroc", "auprc", "f1"]
+METRICS    = ["auroc", "auprc", "f1", "sensitivity", "specificity"]
 
 # ── sweep definitions ─────────────────────────────────────────────────────────
 # Each entry: (sweep_key, display_title, [variant_dirs])
