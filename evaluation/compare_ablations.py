@@ -129,7 +129,7 @@ def summarise(groups: dict[str, list[dict]]) -> list[dict]:
 # ── display ───────────────────────────────────────────────────────────────────
 
 def _fmt(v: float, decimals: int = 4) -> str:
-    return f"{v:.{decimals}f}" if v == v else "  —  "   # nan check
+    return f"{v:.{decimals}}" if v == v else "  —  "   # nan check
 
 
 def print_table(rows: list[dict], sort_by: str) -> None:
