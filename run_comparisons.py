@@ -5,7 +5,7 @@ Generate all sweep comparison plots in one go.  An alternative to calling
 plot_history.py from the CLI for each sweep individually.
 
 Each comparison group produces one figure saved under:
-    experiment_outputs/July23/comparisons/
+    experiment_outputs/Jul24/comparisons/
 
 Usage:
     python run_comparisons.py                  # all sweeps
@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from evaluation.plot_history import plot
 
 # ── paths ─────────────────────────────────────────────────────────────────────
-OUT_ROOT   = Path("experiment_outputs/July23")
+OUT_ROOT   = Path("experiment_outputs/Jul24")
 SAVE_DIR   = OUT_ROOT / "comparisons"
 METRICS    = ["auroc", "auprc", "f1", "sensitivity", "specificity"]
 
