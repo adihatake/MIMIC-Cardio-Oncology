@@ -418,15 +418,16 @@ Requires CUDA: `pip install causal-conv1d mamba-ssm`.
 
 ### Regularization (`run_train.py` defaults)
 
-The dataset is small (~1,800 training samples), so regularization is more aggressive than the original CEHR-BERT paper:
+The dataset is small (~1,800 training samples), so regularization is more aggressive than the original CEHR-BERT paper. The values below are the starting defaults used across all sweeps; each axis is varied independently in its respective sweep.
 
-| Setting | Value | Notes |
-|---|---|---|
-| `num_layers` | 2 | CEHR-BERT uses 5; reduced for dataset size |
-| `ff_dim` | 256 | 2× `d_model`; CEHR-BERT uses 4× |
-| `dropout` | 0.4 | Applied at embedding, attention, FFN, and CLS |
-| `weight_decay` | 5e-2 | L2 penalty via AdamW |
-| `label_smoothing` | 0.1 | Prevents overconfident predictions on small data |
+| Setting | Default | Sweep range | Notes |
+|---|---|---|---|
+| `num_layers` | 1 (S) | 1–4 (arch sweep) | CEHR-BERT uses 5; reduced for dataset size |
+| `ff_dim` | 128 (S) | 128–512 (arch sweep) | 2× `d_model` |
+| `dropout` | 0.3 | 0.1–0.5 (dropout sweep) | Applied at embedding, attention, FFN, and CLS |
+| `weight_decay` | 5e-2 | 0.0–0.2 (wd sweep) | L2 penalty via AdamW |
+| `label_smoothing` | 0.1 | 0.0–0.3 (ls sweep) | Prevents overconfident predictions on small data |
+| `lr` | 1e-4 | 5e-5–1e-3 (lr sweep) | AdamW learning rate |
 
 ---
 
@@ -489,34 +490,37 @@ python run_tokenization.py
 
 ### `run_train.py`
 
-The file you edit most often. Defines ablations and seeds; generates all combinations.
+One-factor-at-a-time hyperparameter sweep using the A0 embedding (additive fusion, no time, no age) and architecture S for all hyperparameter axes. All 90 runs write to `experiment_outputs/July23/`.
 
 Each `seed` independently controls:
 - **Patient split** — which patients go to train / val / test (70 / 15 / 15)
 - **Model initialisation** — weight init and dropout randomness
 
-```python
-ABLATIONS = [
-    ("A0", dict(fusion="add",    use_time=False, use_age=False)),
-    ...
-    ("B2", dict(fusion="concat", use_time=True,  use_age=True)),
-]
-SEEDS = [42, 43, 44, 45, 46]
+**Sweep structure:**
 
-RUNS = [
-    TrainConfig(**_BASE, **emb_kwargs, seed=s,
-                output_dir=Path(f"experiment_outputs/{ablation_id}/seed{s}"),
-                run_name=f"{ablation_id}-seed{s}")
-    for ablation_id, emb_kwargs in ABLATIONS
-    for s in SEEDS
-]
-```
+| Sweep | Variants | Fixed | Runs |
+|---|---|---|---|
+| `arch_sweep/` | S / M / L | default lr/wd/dropout | 15 |
+| `lr_sweep/` | LR1–LR5 (5e-5 → 1e-3) | arch S, default wd/dropout | 25 |
+| `wd_sweep/` | WD1–WD5 (0.0 → 0.2) | arch S, default lr/dropout | 25 |
+| `dropout_sweep/` | D1–D5 (0.1 → 0.5) | arch S, default lr/wd | 25 |
+| **Total** | | | **90** |
+
+Architecture S (`d_model=64, num_heads=4, num_layers=1, ff_dim=128`) is fixed for all hyperparameter sweeps — a safer prior than M for ~1,800 training samples.
 
 ```bash
 python run_train.py
 ```
 
-Each seed produces `test_metrics_{metric}.json` for each checkpoint. Use `compare_ablations.py` with `--metric` to aggregate across seeds for any metric.
+### `run_label_smoothing_ablation.py`
+
+Label smoothing sweep (LS1–LS5: 0.0 → 0.3) using arch S and A0 embedding, all other hyperparameters at their defaults. Kept separate so it can be submitted as an independent HPC job.
+
+```bash
+python run_label_smoothing_ablation.py
+```
+
+Outputs to `experiment_outputs/July23/ls_sweep/`.
 
 ### `run_mamba.py`
 
@@ -676,27 +680,59 @@ experiment_outputs/Jul1_ablations/
 
 ### `evaluation/plot_history.py`
 
-Plots training loss and per-metric validation curves from `history.json`. Each requested metric gets its own panel with a vertical marker at its best epoch. Supports comparing multiple runs.
+Plots training loss and per-metric validation curves from `history.json`. Pass a **variant directory** (parent of seed subdirectories) to aggregate across seeds — the solid line shows the mean and the shaded band shows ±1 std. Pass a single seed directory for no aggregation. Each metric panel shows a compact best-value annotation (`mean ± std @ epoch`).
 
 ```bash
-# Default panels: loss + AUROC + AUPRC + F1
-python evaluation/plot_history.py --model-dir experiment_outputs/run1
-
-# All five metrics
-python evaluation/plot_history.py --model-dir experiment_outputs/run1 \
-    --metrics auroc auprc f1 sensitivity specificity
-
-# Compare runs
+# One variant — aggregates seed* subdirs automatically
 python evaluation/plot_history.py \
-    --model-dir experiment_outputs/run1 experiment_outputs/run2 \
-    --save comparison.png
+    --model-dir experiment_outputs/July23/arch_sweep/M
+
+# Compare variants (one mean±std line per variant)
+python evaluation/plot_history.py \
+    --model-dir experiment_outputs/July23/arch_sweep/S \
+                experiment_outputs/July23/arch_sweep/M \
+                experiment_outputs/July23/arch_sweep/L \
+    --save arch_sweep.png
+
+# Single seed directory — no aggregation, no band
+python evaluation/plot_history.py \
+    --model-dir experiment_outputs/July23/arch_sweep/M/seed42
+
+# Choose metrics
+python evaluation/plot_history.py \
+    --model-dir experiment_outputs/July23/lr_sweep/LR3 \
+    --metrics auroc auprc f1 sensitivity specificity
 ```
 
 | Argument | Default | Description |
 |---|---|---|
+| `--model-dir` | required | Variant dir (aggregates `seed*/history.json`) or single seed dir |
 | `--metrics` | `auroc auprc f1` | Which validation metrics to plot (one panel each) |
 | `--save` | — | Save figure to this path (PNG/PDF/SVG) |
+| `--dpi` | `150` | Output DPI when saving |
 | `--figsize` | auto | Figure width and height in inches |
+
+### `run_comparisons.py`
+
+Generates all sweep comparison plots in one command — an alternative to calling `plot_history.py` from the CLI for each sweep. Calls `plot()` directly (no subprocess). Variants with missing results are skipped automatically, so this can be run incrementally while training is still in progress.
+
+```bash
+# All sweeps
+python run_comparisons.py
+
+# Specific sweeps only
+python run_comparisons.py --sweep arch lr
+
+# Display interactively instead of saving
+python run_comparisons.py --show
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `--sweep` | all | Which sweeps to plot: `arch`, `lr`, `wd`, `dropout`, `ls` |
+| `--show` | off | Display interactively instead of saving to file |
+
+Figures are saved to `experiment_outputs/July23/comparisons/`.
 
 ---
 
@@ -728,8 +764,8 @@ MIMIC-Cardio-Oncology/
 │   └── *.ipynb                        Exploratory notebooks
 ├── evaluation/
 │   ├── evaluate_model.py              Per-split metrics + per-sample table
-│   ├── compare_ablations.py           Mean ± std AUROC across seeds
-│   └── plot_history.py                Training curves
+│   ├── compare_ablations.py           Mean ± std across seeds, all metrics
+│   └── plot_history.py                Training curves (mean ± std across seeds)
 ├── interpretation/
 │   ├── interpret.py                   Attention heatmaps + rollout + Integrated Gradients
 │   └── visualize_attributions.py      Summary plots from attributions.csv
@@ -750,7 +786,9 @@ MIMIC-Cardio-Oncology/
 │   └── summarize_tokenization.py      Summary statistics + figures
 ├── run_cohort.py                      Runner: cohort generation
 ├── run_tokenization.py                Runner: tokenization variants
-├── run_train.py                       Runner: transformer ablation sweep
+├── run_train.py                       Runner: arch + lr + wd + dropout sweeps (90 runs)
+├── run_label_smoothing_ablation.py    Runner: label smoothing sweep (25 runs)
+├── run_comparisons.py                 Runner: generate all sweep comparison plots
 ├── run_mamba.py                       Runner: Mamba training
 ├── run_xgboost.py                     Runner: XGBoost baseline
 ├── run_interpretation.py              Runner: batch xAI interpretation
@@ -802,22 +840,21 @@ python interpretation/interpret.py \
     --subject-id 10006008 --cycle-number 1
 ```
 
-### Full embedding ablation sweep (A0–B2, 5 seeds)
+### Hyperparameter sweep (90 runs + 25 label smoothing)
 
 ```bash
-# All 35 runs (7 ablations × 5 seeds):
+# Arch + lr + wd + dropout sweeps (90 runs total):
 python run_train.py
 
-# Compare results:
-python evaluation/compare_ablations.py experiment_outputs/ --sort auroc
-```
+# Label smoothing sweep (25 runs, separate job):
+python run_label_smoothing_ablation.py
 
-### C1/C2 (requires ATT tokenization)
+# Generate all comparison plots after training:
+python run_comparisons.py
 
-```bash
-# Add ATT variant to run_tokenization.py RUNS, then:
-python run_tokenization.py   # produces tokenization_outputs/Jul17_512_att
+# Or regenerate a specific sweep only:
+python run_comparisons.py --sweep lr
 
-# In run_train.py: uncomment C1/C2 rows and set data_dir to the ATT tokenization
-python run_train.py
+# Compare test metrics across variants:
+python evaluation/compare_ablations.py experiment_outputs/July23/lr_sweep/ --sort auroc --metric auroc
 ```
