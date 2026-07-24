@@ -32,9 +32,9 @@ SELECT
             WHEN icd_code LIKE '428%' THEN 1
             WHEN icd_code LIKE '410%' THEN 1
             WHEN icd_code LIKE '411%' THEN 1
-            WHEN icd_code LIKE '412%' THEN 1
+            -- 412% (old MI, ICD-9) is a history code, not an incident event — excluded
             WHEN icd_code LIKE '413%' THEN 1
-            WHEN icd_code LIKE '414%' THEN 1
+            -- 414% (chronic ischemic heart disease, ICD-9) is too broad for incident toxicity — excluded
             WHEN icd_code LIKE '420%' THEN 1
             WHEN icd_code LIKE '421%' THEN 1
             WHEN icd_code LIKE '422%' THEN 1
@@ -58,7 +58,7 @@ SELECT
             WHEN icd_code LIKE 'I47%' THEN 1
             WHEN icd_code LIKE 'I48%' THEN 1
             WHEN icd_code LIKE 'I49%' THEN 1
-            WHEN icd_code LIKE 'I514%' THEN 1
+            WHEN icd_code LIKE 'I51%' THEN 1
             ELSE 0
         END
     ) AS cv_event,

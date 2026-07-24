@@ -13,9 +13,11 @@ import cohort_src.generate_cycle_modeling_table as cohort_module
 
 # ── config ────────────────────────────────────────────────────────────────────
 
+REPO_ROOT = Path(__file__).resolve().parent
+
 cfg = CohortConfig(
-    data_dir    = Path("/path/to/MIMIC_IV_raw_data"),
-    output_name = "cycle_modeling_ver4",
+    data_dir    = REPO_ROOT.parent / "MIMIC_IV_raw_data"
+    output_name = "cycle_modeling_July24_v2",
 )
 
 # ── run ───────────────────────────────────────────────────────────────────────

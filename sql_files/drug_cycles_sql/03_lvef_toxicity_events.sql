@@ -4,6 +4,13 @@
 --
 -- Main output:
 --   lvef_toxicity_events
+--
+-- Data quality check applied:
+--   Baseline LVEF must be >= 50% before the first drug.  Patients with
+--   already-impaired cardiac function cannot meaningfully contribute a
+--   drug-induced LVEF drop endpoint (their outcome is pre-existing, not
+--   treatment-caused).  These patients are excluded from LVEF events here
+--   and from the binary modeling table in 06.
 
 CREATE OR REPLACE VIEW all_lvef AS
 SELECT
@@ -44,6 +51,7 @@ FROM baseline_lvef_pre_first_drug b
 JOIN all_lvef f
     ON b.subject_id = f.subject_id
 WHERE b.baseline_lvef IS NOT NULL
+  AND b.baseline_lvef >= 50                          -- exclude already-impaired cardiac function
   AND f.measurement_datetime >= b.first_oncology_time
   AND (b.baseline_lvef - f.lvef_value) >= 10
   AND f.lvef_value < 50;

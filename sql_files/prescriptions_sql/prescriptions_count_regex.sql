@@ -12,7 +12,26 @@ WHERE drug IS NOT NULL
   AND starttime IS NOT NULL
   AND regexp_matches(
         LOWER(drug),
-        'doxorubicin|daunorubicin|epirubicin|trastuzumab|paclitaxel|docetaxel|fluorouracil|5-fluorouracil|capecitabine|bevacizumab|cetuximab|sunitinib|imatinib|bortezomib|carfilzomib|lenalidomide|thalidomide|pomalidomide|nivolumab|pembrolizumab|atezolizumab'
+        -- anthracyclines
+        'doxorubicin|daunorubicin|epirubicin|idarubicin'
+        -- immune checkpoint inhibitors
+        '|nivolumab|pembrolizumab|atezolizumab|ipilimumab|durvalumab|avelumab|cemiplimab'
+        -- HER2-targeted
+        '|trastuzumab|pertuzumab|ado-trastuzumab|emtansine'
+        -- taxanes
+        '|paclitaxel|docetaxel|cabazitaxel'
+        -- fluoropyrimidines
+        '|fluorouracil|5-fluorouracil|capecitabine'
+        -- VEGF inhibitors
+        '|bevacizumab|aflibercept|ramucirumab'
+        -- EGFR inhibitors
+        '|cetuximab|panitumumab'
+        -- tyrosine kinase inhibitors
+        '|sunitinib|imatinib|dasatinib|nilotinib|ponatinib|sorafenib|pazopanib|cabozantinib|axitinib|lenvatinib'
+        -- proteasome inhibitors
+        '|bortezomib|carfilzomib|ixazomib'
+        -- immunomodulatory agents
+        '|lenalidomide|thalidomide|pomalidomide'
       );
 
  -- Returns: 2565

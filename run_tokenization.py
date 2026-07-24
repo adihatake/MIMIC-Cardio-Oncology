@@ -32,7 +32,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 # ── shared settings ───────────────────────────────────────────────────────────
 _BASE = dict(
     data_dir    = REPO_ROOT.parent / "MIMIC_IV_raw_data",
-    cohort_name = "cycle_modeling_v4",
+    cohort_name = "cycle_modeling_July24_v2",
     max_seq_len = 512,
     run_split   = False,
     run_summarize = True,
@@ -46,16 +46,8 @@ _BASE = dict(
 RUNS = [
     # Base: no ATT tokens, no bucketing
     TokenizationConfig(**_BASE,
-        output_name = "Jul17_512_all_labs",
+        output_name = "Jul24_512_v2",
     ),
-
-    # Bucketed labs + medications
-    TokenizationConfig(**_BASE,
-        output_name            = "Jul17_512_bucketed_all_labs",
-        bucket_labs            = True,
-        bucket_medications     = True,
-    ),
-
 ]
 
 # ── run ───────────────────────────────────────────────────────────────────────

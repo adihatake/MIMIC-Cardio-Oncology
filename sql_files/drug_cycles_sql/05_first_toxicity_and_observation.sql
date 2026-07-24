@@ -62,7 +62,19 @@ SELECT
     subject_id,
     starttime AS observation_time,
     'oncology_drug' AS observation_type
-FROM oncology_drugs_classified;
+FROM oncology_drugs_classified
+
+UNION ALL
+
+-- Patient death as a definitive follow-up endpoint.
+-- Without this, deceased patients with no post-treatment admissions are
+-- labeled unknown_no_followup_evidence, which is incorrect.
+SELECT
+    subject_id,
+    CAST(dod AS TIMESTAMP) AS observation_time,
+    'death' AS observation_type
+FROM read_csv_auto('mimic-iv-3.1/hosp/patients.csv')
+WHERE dod IS NOT NULL;
 
 CREATE OR REPLACE VIEW patient_last_observation AS
 SELECT

@@ -118,4 +118,8 @@ CREATE OR REPLACE VIEW final_cycle_binary_modeling_table AS
 SELECT *
 FROM final_cycle_modeling_table
 WHERE eligible_for_binary_label = 1
-  AND label IN ('positive', 'negative_observed');
+  AND label IN ('positive', 'negative_observed')
+  -- Data quality check: exclude patients whose baseline LVEF was already
+  -- impaired (<50%) before first drug.  Keeps patients with no baseline
+  -- LVEF measurement (NULL) since absence of measurement != impairment.
+  AND (baseline_lvef IS NULL OR baseline_lvef >= 50);
