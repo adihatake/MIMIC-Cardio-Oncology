@@ -150,7 +150,7 @@ WD_RUNS = [
 ]
 
 # ── 4. Dropout sweep ──────────────────────────────────────────────────────────
-# Fix arch M, default lr/wd; vary dropout.
+# Fix arch S, default lr/wd; vary dropout.
 DROPOUT_SWEEP = [
     ("D1", dict(dropout=0.1)),
     ("D2", dict(dropout=0.2)),
