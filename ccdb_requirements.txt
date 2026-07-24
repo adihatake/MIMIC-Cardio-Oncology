@@ -13,6 +13,7 @@ scipy>=1.15.3
 # Deep learning & tracking
 torch==2.12.1 --index-url https://download.pytorch.org/whl/cu126
 wandb
+xgboost
 
 # Utilities
 duckdb>=1.5.2
