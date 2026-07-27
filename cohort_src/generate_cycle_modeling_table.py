@@ -28,8 +28,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 
 SQL_ROOT              = REPO_ROOT / "sql_files"
 DIAGNOSES_SQL_DIR     = SQL_ROOT / "diagnoses_sql"
-PRESCRIPTIONS_SQL_DIR = SQL_ROOT / "prescriptions_sql"
-DRUG_CYCLES_SQL_DIR   = SQL_ROOT / "drug_cycles_sql"
+PRESCRIPTIONS_SQL_DIR = SQL_ROOT / "prescriptions_sql" / "jul24"
+DRUG_CYCLES_SQL_DIR   = SQL_ROOT / "drug_cycles_sql" / "jul24"
 
 OUTPUT_DIR = REPO_ROOT / "cohort_outputs" / "cycle_modeling_ver2"
 
@@ -86,10 +86,34 @@ def _assign_patient_status(labels) -> str:
     return "unclassified_review"
 
 
-def main(data_location: Path, output_name: str | None = None) -> None:
+def main(
+    data_location: Path,
+    output_name: str | None = None,
+    cycle_sql_dir: Path | None = None,
+    prescriptions_sql_dir: Path | None = None,
+) -> None:
     out_dir  = REPO_ROOT / "cohort_outputs" / output_name if output_name else OUTPUT_DIR
     data_loc = data_location
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    _cycle_dir = cycle_sql_dir or DRUG_CYCLES_SQL_DIR
+    _presc_dir = prescriptions_sql_dir or PRESCRIPTIONS_SQL_DIR
+
+    base_sql_paths = [
+        DIAGNOSES_SQL_DIR / "active_cancer.sql",
+        DIAGNOSES_SQL_DIR / "personal_history_cancer.sql",
+        DIAGNOSES_SQL_DIR / "history_and_active.sql",
+        _presc_dir        / "prescriptions_count_regex.sql",
+    ]
+    cycle_sql_paths = [
+        _cycle_dir / "00_parameters_and_windows.sql",
+        _cycle_dir / "01_drug_classification_and_first_drug.sql",
+        _cycle_dir / "02_cycle_exposures.sql",
+        _cycle_dir / "03_lvef_toxicity_events.sql",
+        _cycle_dir / "04_cv_toxicity_events.sql",
+        _cycle_dir / "05_first_toxicity_and_observation.sql",
+        _cycle_dir / "06_final_modeling_table.sql",
+    ]
 
     # Recompute SQL roots if data_location changed
     mimic_hosp_dir = data_loc / "mimic-iv-3.1/hosp"
@@ -100,7 +124,7 @@ def main(data_location: Path, output_name: str | None = None) -> None:
     print("OUTPUT_DIR:   ", out_dir)
 
     # Verify SQL files exist before connecting
-    missing = [p for p in BASE_SQL_PATHS + CYCLE_SQL_PATHS if not p.exists()]
+    missing = [p for p in base_sql_paths + cycle_sql_paths if not p.exists()]
     if missing:
         raise FileNotFoundError("Missing SQL files:\n" + "\n".join(str(p) for p in missing))
 
@@ -110,7 +134,7 @@ def main(data_location: Path, output_name: str | None = None) -> None:
 
     # ── base cohort ───────────────────────────────────────────────────────────
     print("\nRunning base cohort SQL...")
-    for path in BASE_SQL_PATHS:
+    for path in base_sql_paths:
         print(f"  {path.relative_to(REPO_ROOT)}")
         _execute_sql_file(con, path)
     print(f"  all_cancer_patients: {_count_rows(con, 'all_cancer_patients'):,} rows")
@@ -118,7 +142,7 @@ def main(data_location: Path, output_name: str | None = None) -> None:
 
     # ── cycle modelling SQL ───────────────────────────────────────────────────
     print("\nRunning cycle modelling SQL...")
-    for path in CYCLE_SQL_PATHS:
+    for path in cycle_sql_paths:
         print(f"  {path.relative_to(REPO_ROOT)}")
         _execute_sql_file(con, path)
 

@@ -9,7 +9,7 @@
 End-to-end pipeline: **cohort → tokenization → train → interpret**
 
 Splits are computed per training run from the run's seed — not generated during tokenization.  
-This allows multi-seed experiments (seed = 42, 43, 44 …) each with independent patient assignments.
+This allows multi-seed experiments (seed = 42, 52, 62, 72, 82) each with independent patient assignments.
 
 All scripts are run from the **repo root** unless noted otherwise.
 
@@ -17,14 +17,14 @@ All scripts are run from the **repo root** unless noted otherwise.
 
 ## Two ways to run the pipeline
 
-| | CLI | Runner scripts |
+| | Runner scripts | CLI |
 |---|---|---|
-| **How** | `python cohort_src/cohort_cli.py --data-dir ...` | `python run_cohort.py` |
-| **Config lives in** | Command-line arguments | `run_*.py` files, version-controlled |
-| **Best for** | One-off runs, shell scripts, HPC job submission | Development, experiments, ablations |
-| **Multi-run** | Shell loop or separate invocations | Add entries to `RUNS` list in the relevant runner |
+| **How** | `python run_cohort.py` | `python cohort_src/cohort_cli.py --data-dir ...` |
+| **Config lives in** | `run_*.py` files, version-controlled | Command-line arguments |
+| **Best for** | Development, experiments, ablations | One-off runs, shell scripts, HPC job submission |
+| **Multi-run** | Add entries to `RUNS` list in the relevant runner | Shell loop or separate invocations |
 
-Both approaches call the same underlying `main()` functions — they are interchangeable and complementary.
+Both approaches call the same underlying `main()` functions — they are interchangeable.
 
 ---
 
@@ -55,10 +55,42 @@ Expected layout:
 
 Runs a chain of DuckDB SQL files to produce the cycle-level cardiotoxicity modelling table.
 
+### Runner script
+
+Edit `OUTPUT_NAME`, `CYCLE_SQL_DIR`, and `PRESCRIPTIONS_SQL_DIR` at the top of `run_cohort.py`, then:
+
+```bash
+python run_cohort.py
+```
+
+**SQL version directories** — choose the version that matches your cohort:
+
+| Directory | Cohort | Description |
+|---|---|---|
+| `sql_files/drug_cycles_sql/jul17/` | `cycle_modeling_v4` | Jun 23 definitions — original cardiotoxicity labels |
+| `sql_files/drug_cycles_sql/jul24/` | `cycle_modeling_July24_v2` | Jul 24 definitions — prior cancer check, LVEF≥50 baseline, death endpoint, expanded drug list |
+
+Corresponding prescriptions SQL:
+
+| Directory | Version |
+|---|---|
+| `sql_files/prescriptions_sql/jul17/` | Jul 17 |
+| `sql_files/prescriptions_sql/jul24/` | Jul 24 |
+
+Example `run_cohort.py` configuration for Jul 24 data:
+
+```python
+OUTPUT_NAME           = "cycle_modeling_July24_v2"
+CYCLE_SQL_DIR         = REPO_ROOT / "sql_files" / "drug_cycles_sql" / "jul24"
+PRESCRIPTIONS_SQL_DIR = REPO_ROOT / "sql_files" / "prescriptions_sql" / "jul24"
+```
+
+### CLI
+
 ```bash
 python cohort_src/cohort_cli.py \
     --data-dir <DATA_DIR> \
-    --name cycle_modeling_ver2
+    --name cycle_modeling_July24_v2
 ```
 
 | Argument | Required | Default | Description |
@@ -66,7 +98,7 @@ python cohort_src/cohort_cli.py \
 | `--data-dir` | yes | — | Path to the MIMIC-IV raw data directory |
 | `--name` | no | `cycle_modeling_ver2` | Output subdirectory under `cohort_outputs/` |
 
-**Cohort definition and label assignment** (`sql_files/drug_cycles_sql/`):
+**Cohort definition and label assignment** (`sql_files/drug_cycles_sql/<version>/`):
 
 Each (patient, chemotherapy cycle) row receives one of four labels:
 
@@ -92,36 +124,45 @@ Each (patient, chemotherapy cycle) row receives one of four labels:
 | `patient_level_summary.csv` | Patient counts per status |
 | `cohort_accounting.csv` | High-level patient counts at each pipeline stage |
 
-You can also run the module directly:
-
-```bash
-python cohort_src/generate_cycle_modeling_table.py \
-    --data-dir <DATA_DIR> \
-    --name cycle_modeling_ver2
-```
-
 ---
 
 ## Step 2 — Tokenize
 
 Converts the cohort CSV into padded integer token tensors ready for PyTorch.
 
+### Runner script
+
+Edit `cohort_name` and add `TokenizationConfig` entries to `RUNS` in `run_tokenization.py`, then:
+
+```bash
+python run_tokenization.py
+```
+
+Example configuration for Jul 24 data:
+
+```python
+_BASE = dict(
+    cohort_name             = "cycle_modeling_July24_v2",
+    max_seq_len             = 512,
+    insert_visit_delimiters = True,
+    include_all_labs        = True,
+    ...
+)
+RUNS = [
+    TokenizationConfig(**_BASE, output_name="Jul24_512_v2"),
+]
+```
+
+### CLI
+
 ```bash
 python tokenization_src/tokenize_cli.py \
     --data-dir <DATA_DIR> \
-    --cohort cycle_modeling_ver2 \
-    --name ver1
+    --cohort cycle_modeling_July24_v2 \
+    --name Jul24_512_v2
 ```
 
-Add `--summarize` to print cohort statistics and save figures in the same command:
-
-```bash
-python tokenization_src/tokenize_cli.py \
-    --data-dir <DATA_DIR> \
-    --cohort cycle_modeling_ver2 \
-    --name ver1 \
-    --summarize
-```
+Add `--summarize` to print cohort statistics and save figures in the same command.
 
 | Argument | Required | Default | Description |
 |---|---|---|---|
@@ -134,10 +175,10 @@ python tokenization_src/tokenize_cli.py \
 | `--insert-visit-delimiters` | no | off | Wrap each visit's events with `[V_START]`/`[V_END]` tokens |
 | `--bucket-labs` | no | off | Append per-itemid quantile bucket (`_Q1`–`_Q4`) to lab tokens — changes vocab |
 | `--bucket-medications` | no | off | Append per-drug dose-tier bucket (`_Q1`–`_Q4`) to medication tokens — changes vocab |
-| `--only-abnormal-labs` | no | on (default) | Include only flagged-abnormal lab results (explicit form of the default) |
+| `--only-abnormal-labs` | no | on (default) | Include only flagged-abnormal lab results |
 | `--include-all-labs` | no | off | Include all lab results regardless of the MIMIC abnormality flag; mutually exclusive with `--only-abnormal-labs` |
 
-**Lab filtering note:** By default only labs with `flag IS NOT NULL` in MIMIC `labevents` are tokenized — i.e. results that the lab system marked as abnormal. This keeps sequence length manageable but means a lab that is always normal (e.g. Troponin I in this cohort) will be absent from the vocabulary entirely. Use `--include-all-labs` to include every inpatient result regardless of flag. The resolved flag (`only_abnormal_labs` / `include_all_labs`) is written to `metadata.json` for provenance.
+**Lab filtering note:** By default only labs with `flag IS NOT NULL` in MIMIC `labevents` are tokenized. Use `--include-all-labs` to include every inpatient result regardless of flag. The resolved flag is written to `metadata.json` for provenance.
 
 **Outputs** (`tokenization_outputs/<name>/`):
 
@@ -155,18 +196,6 @@ python tokenization_src/tokenize_cli.py \
 | `samples.csv/.parquet` | Per-sample metadata (subject_id, cycle_number, prediction_time, binary_label, seq_len) |
 | `vocab.json` | Concept and type vocabulary mappings |
 | `metadata.json` | `max_seq_len`, `positive_rate`, vocab size, tokenisation flags |
-
-You can also run the tokenizer module directly:
-
-```bash
-python tokenization_src/tokenize_cycle_sequences.py \
-    --data-dir <DATA_DIR> \
-    --cohort cycle_modeling_ver2 \
-    --name ver1 \
-    --max-seq-len 600 \
-    --insert-visit-delimiters \
-    --include-all-labs
-```
 
 ### Sequence structure
 
@@ -186,7 +215,7 @@ With `--insert-att` and `--insert-visit-delimiters` (CEHR-BERT style):
          ^^^ visit 1 ^^^        ^ATT^      ^^^ visit 2 ^^^         ^ATT^   ^^^ visit 3 ^^^
 ```
 
-ATT token thresholds (CEHR-BERT `CEHR_BERT` mode):
+ATT token thresholds:
 
 | Token | Inter-visit gap |
 |---|---|
@@ -202,7 +231,7 @@ Prints cohort statistics and saves matplotlib figures.
 Can be re-run at any time without re-tokenizing.
 
 ```bash
-python tokenization_src/summarize_tokenization.py tokenization_outputs/ver1
+python tokenization_src/summarize_tokenization.py tokenization_outputs/Jul24_512_v2
 ```
 
 **Figures saved** (`tokenization_outputs/<name>/summarization_figures/`):
@@ -229,7 +258,7 @@ Both share the same `EHR_Event_Embedding` layer and the same ablation flags (`fu
 
 ```bash
 python model_src/train.py \
-    --data-dir tokenization_outputs/ver1 \
+    --data-dir tokenization_outputs/Jul24_512_v2 \
     --output-dir experiment_outputs/run1
 ```
 
@@ -237,7 +266,7 @@ Quick debug run:
 
 ```bash
 python model_src/train.py \
-    --data-dir tokenization_outputs/ver1 \
+    --data-dir tokenization_outputs/Jul24_512_v2 \
     --output-dir experiment_outputs/debug \
     --d-model 64 --num-heads 4 --num-layers 2 \
     --epochs 3 --batch-size 16
@@ -279,7 +308,7 @@ python model_src/train.py \
 | `test_metrics.json` | Test results for the AUROC checkpoint (backward-compatible) |
 | `test_metrics_{metric}.json` | Test results for each per-metric checkpoint |
 
-Each epoch, the training loop saves a checkpoint whenever a metric improves. The tqdm progress bar shows `auroc`, `auprc`, and a `new=` field listing which checkpoints were just updated. After training, all 5 checkpoints are evaluated on the held-out test set and results are printed as a comparison table.
+Each epoch, the training loop saves a checkpoint whenever a metric improves. After training, all 5 checkpoints are evaluated on the held-out test set and results are printed as a comparison table.
 
 ---
 
@@ -293,7 +322,7 @@ Post-training interpretability using three complementary techniques:
 | Attention rollout | Cross-layer aggregated CLS relevance (Abnar & Zuidema 2020) | More principled than single-layer attention |
 | Integrated Gradients | Token attribution satisfying the completeness axiom (Captum) | Gold standard; requires `pip install captum` |
 
-**IG baseline:** The Integrated Gradients baseline is always a zero-embedding sequence — not the `[PAD]` token embedding, but a literal zero tensor in post-LayerNorm embedding space. This represents a neutral "no information" input and is consistent across all runs.
+**IG baseline:** Always a zero-embedding sequence — not the `[PAD]` token embedding, but a literal zero tensor in post-LayerNorm embedding space. Represents a neutral "no information" input.
 
 ### Single sample via CLI
 
@@ -301,13 +330,13 @@ Post-training interpretability using three complementary techniques:
 # Explain by subject_id and cycle_number (recommended — named output folder)
 python interpretation/interpret.py \
     --model-dir experiment_outputs/run1 \
-    --data-dir  tokenization_outputs/Jul17_512_all_labs \
+    --data-dir  tokenization_outputs/Jul24_512_v2 \
     --subject-id 12345 --cycle-number 2
 
 # Explain by dataset row index
 python interpretation/interpret.py \
     --model-dir experiment_outputs/run1 \
-    --data-dir  tokenization_outputs/Jul17_512_all_labs \
+    --data-dir  tokenization_outputs/Jul24_512_v2 \
     --sample-idx 42
 
 # More accurate IG (default 100 steps; convergence delta < 0.01 is good)
@@ -315,9 +344,6 @@ python interpretation/interpret.py ... --ig-steps 200
 
 # Skip IG if captum is not installed
 python interpretation/interpret.py ... --skip-ig
-
-# Show top 20 tokens in bar charts instead of 30
-python interpretation/interpret.py ... --top-k 20
 
 # Use the sensitivity-optimised checkpoint instead of the default AUROC one
 python interpretation/interpret.py ... --checkpoint-metric sensitivity
@@ -334,27 +360,16 @@ python interpretation/interpret.py ... --checkpoint-metric sensitivity
 
 ### Visualize attributions separately
 
-Reads `attributions.csv` and writes three additional summary plots:
-
 ```bash
 python interpretation/visualize_attributions.py \
     --input-dir interpretation/outputs/12345_cycle2
-
-# Or point directly at the CSV
-python interpretation/visualize_attributions.py \
-    --csv interpretation/outputs/sample_42/attributions.csv
-
-# Write plots to a different directory
-python interpretation/visualize_attributions.py \
-    --input-dir interpretation/outputs/12345_cycle2 \
-    --output-dir interpretation/figures/12345_cycle2
 ```
 
 | File | Description |
 |---|---|
 | `comparison_top{K}.png` | IG (top) and rollout (bottom) for the same top-K tokens on aligned panels |
-| `event_type_breakdown.png` | Total attribution summed by event type — shows whether the model relies more on diagnoses, labs, or medications |
-| `rollout_vs_ig_scatter.png` | Per-token scatter: rollout vs IG score; top-5 IG tokens annotated; divergences reveal where methods disagree |
+| `event_type_breakdown.png` | Total attribution summed by event type |
+| `rollout_vs_ig_scatter.png` | Per-token scatter: rollout vs IG score; top-5 IG tokens annotated |
 
 ---
 
@@ -367,9 +382,9 @@ python interpretation/visualize_attributions.py \
 | Flag | Values | Effect |
 |---|---|---|
 | `fusion` | `"add"` (default) | BEHRT-style element-wise sum of all embedding tables |
-| | `"concat"` | CEHR-BERT: `cat([concept, time*, age*, position]) → Linear(4d→d) → GELU`, then type/visit/segment as additive residuals. Components disabled by `use_time=False` / `use_age=False` are zeroed before projection — weight shape stays identical across B0–B2. |
-| `use_time` | `False` / `True` | Learned sinusoidal time embedding: `sin((days/365.25) × w + φ)`. Requires `dates.pt`. |
-| `use_age` | `False` / `True` | Continuous-age sinusoidal embedding: `sin(age_years × w + φ)`. In `"add"` mode added on top of the discrete decade-bucket embedding. Requires `age_years.pt`. |
+| | `"concat"` | CEHR-BERT: `cat([concept, time*, age*, position]) → Linear(4d→d) → GELU`, then type/visit/segment as additive residuals |
+| `use_time` | `False` / `True` | Learned sinusoidal time embedding. Requires `dates.pt`. |
+| `use_age` | `False` / `True` | Continuous-age sinusoidal embedding. Requires `age_years.pt`. |
 
 | Component | `fusion="add"` | `fusion="concat"` |
 |---|---|---|
@@ -389,15 +404,13 @@ python interpretation/visualize_attributions.py \
 EHR_Event_Embedding → N × TransformerEncoderLayer (pre-norm, GELU FFN) → CLS pooling → Linear(d → 2)
 ```
 
-Self-attention gives every token access to every other token (O(L²)).
-
 - Optimizer: AdamW
 - Scheduler: CosineAnnealingLR (`T_max=epochs`, `eta_min=lr/10`)
 - Loss: CrossEntropyLoss with inverse-frequency class weights + optional label smoothing
 - Mixed precision: `torch.amp.autocast` + `GradScaler` (CUDA only)
-- Five checkpoints saved per run: one per metric (`best_model_{auroc/auprc/f1/sensitivity/specificity}.pt`), each updated independently whenever that metric improves
+- Five checkpoints saved per run: one per metric (`best_model_{auroc/auprc/f1/sensitivity/specificity}.pt`)
 
-**`return_attention` hook:** `EHR_Encoder.forward()` accepts `return_attention=True`, which returns `(logits, all_attn)` where `all_attn` is a list of `(B, num_heads, seq, seq)` tensors — one per layer. Attention weights are pre-dropout softmax values. Used by `interpretation/interpret.py`.
+**`return_attention` hook:** `EHR_Encoder.forward()` accepts `return_attention=True`, which returns `(logits, all_attn)` where `all_attn` is a list of `(B, num_heads, seq, seq)` tensors — one per layer.
 
 ### Mamba encoder (`model_type="mamba"`)
 
@@ -405,28 +418,19 @@ Self-attention gives every token access to every other token (O(L²)).
 EHR_Event_Embedding → N × BiMambaBlock (fwd SSM + bwd SSM + merge) → CLS pooling → Linear(d → 2)
 ```
 
-`BiMambaBlock` runs two `mamba_ssm.Mamba` instances in opposite directions and merges their outputs, giving full bidirectional context at O(L) cost. Uses [github.com/state-spaces/mamba](https://github.com/state-spaces/mamba).
+`BiMambaBlock` runs two `mamba_ssm.Mamba` instances in opposite directions. Requires CUDA: `pip install causal-conv1d mamba-ssm`.
 
-| Param | Default | Description |
-|---|---|---|
-| `d_state` | `16` | SSM latent state size — controls memory capacity |
-| `d_conv` | `4` | Depthwise Conv1d kernel width |
-| `d_expand` | `2` | Inner-dim multiplier: `d_inner = d_expand × d_model` |
-| `bidirectional` | `True` | `True` → BiMambaBlock (recommended); `False` → causal |
+### Regularization (`run_train.py` defaults for Jul24 data)
 
-Requires CUDA: `pip install causal-conv1d mamba-ssm`.
-
-### Regularization (`run_train.py` defaults)
-
-The dataset is small (~1,800 training samples), so regularization is more aggressive than the original CEHR-BERT paper. The values below are the starting defaults used across all sweeps; each axis is varied independently in its respective sweep.
+The dataset is small (~1,800 training samples). Jul24 defaults are tuned for higher positive rate (35.6%) and label noise from the death endpoint.
 
 | Setting | Default | Sweep range | Notes |
 |---|---|---|---|
-| `num_layers` | 1 (S) | 1–4 (arch sweep) | CEHR-BERT uses 5; reduced for dataset size |
+| `num_layers` | 1 (S) | 1–4 (arch sweep) | Reduced from CEHR-BERT's 5 for dataset size |
 | `ff_dim` | 128 (S) | 128–512 (arch sweep) | 2× `d_model` |
-| `dropout` | 0.3 | 0.1–0.5 (dropout sweep) | Applied at embedding, attention, FFN, and CLS |
-| `weight_decay` | 5e-2 | 0.0–0.2 (wd sweep) | L2 penalty via AdamW |
-| `label_smoothing` | 0.1 | 0.0–0.3 (ls sweep) | Prevents overconfident predictions on small data |
+| `dropout` | 0.4 | 0.2–0.6 (dropout sweep) | Bumped from 0.3 due to noisier Jul24 labels |
+| `weight_decay` | 5e-2 | 1e-2–4e-1 (wd sweep) | Range shifted up vs Jul17; overfitting is primary concern |
+| `label_smoothing` | 0.1 | 0.05–0.25 (ls sweep) | Penalises overconfident predictions on noisy labels |
 | `lr` | 1e-4 | 5e-5–1e-3 (lr sweep) | AdamW learning rate |
 
 ---
@@ -445,18 +449,23 @@ The dataset is small (~1,800 training samples), so regularization is more aggres
 | C1 | best of A/B | — | — | Same flags + `insert_att=True` tokenization |
 | C2 | `"concat"` | True | True | Full CEHR-BERT (concat + time + age + ATT) |
 
-`dates.pt` and `age_years.pt` are **always written** by the tokenizer — no special flag is needed for A0–B2. C1/C2 require a separate tokenization built with `insert_att=True`.
+`dates.pt` and `age_years.pt` are **always written** by the tokenizer — no special flag needed for A0–B2. C1/C2 require a separate tokenization built with `insert_att=True`.
 
 ---
 
 ## Runner scripts
 
-Config dataclasses live in `configs/` and are imported by the runner scripts.  
-Edit the config at the top of each runner, then execute it — no CLI flags needed.
+Config values live directly in each runner script — edit the variables at the top, then run.
 
 ### `run_cohort.py`
 
-Edit `data_dir` and `output_name`, then:
+Set `OUTPUT_NAME`, `CYCLE_SQL_DIR`, and `PRESCRIPTIONS_SQL_DIR` at the top:
+
+```python
+OUTPUT_NAME           = "cycle_modeling_July24_v2"
+CYCLE_SQL_DIR         = REPO_ROOT / "sql_files" / "drug_cycles_sql" / "jul24"
+PRESCRIPTIONS_SQL_DIR = REPO_ROOT / "sql_files" / "prescriptions_sql" / "jul24"
+```
 
 ```bash
 python run_cohort.py
@@ -464,63 +473,61 @@ python run_cohort.py
 
 ### `run_tokenization.py`
 
-Defines multiple tokenization variants in a `RUNS` list. Each entry is a `TokenizationConfig`.  
-Current variants tokenize from `cycle_modeling_v4` with `include_all_labs=True` and `insert_visit_delimiters=True`.
+Set `cohort_name` in `_BASE` and add `TokenizationConfig` entries to `RUNS`:
+
+```python
+_BASE = dict(cohort_name="cycle_modeling_July24_v2", ...)
+RUNS  = [TokenizationConfig(**_BASE, output_name="Jul24_512_v2")]
+```
 
 ```bash
 python run_tokenization.py
 ```
 
-`TokenizationConfig` fields:
+### `run_pipeline.py`
 
-| Field | Default | Description |
-|---|---|---|
-| `data_dir` | required | Path to MIMIC-IV raw data |
-| `cohort_name` | `"cycle_modeling_ver2"` | Source under `cohort_outputs/` |
-| `output_name` | `"ver1"` | Output under `tokenization_outputs/` |
-| `max_seq_len` | `600` | Token sequence length |
-| `insert_att` | `False` | ATT tokens between visits |
-| `insert_visit_delimiters` | `False` | `[V_START]`/`[V_END]` around each visit |
-| `bucket_labs` | `False` | Append `_Q1`–`_Q4` quantile bucket to lab tokens |
-| `bucket_medications` | `False` | Append `_Q1`–`_Q4` dose-tier bucket to medication tokens |
-| `only_abnormal_labs` | `True` | Include only flagged-abnormal lab results (default) |
-| `include_all_labs` | `False` | Include all lab results; mutually exclusive with `only_abnormal_labs` |
-| `run_split` | `False` | Run patient split after tokenizing |
-| `run_summarize` | `True` | Run summarization figures after tokenizing |
+Runs cohort + tokenization in sequence. Toggle `RUN_COHORT` / `RUN_TOKENIZE` flags to skip stages.
+
+```bash
+python run_pipeline.py
+```
 
 ### `run_train.py`
 
-One-factor-at-a-time hyperparameter sweep using the A0 embedding (additive fusion, no time, no age) and architecture S for all hyperparameter axes. All 90 runs write to `experiment_outputs/July23/`.
+One-factor-at-a-time hyperparameter sweep using the A0 embedding (additive fusion, no time, no age) and architecture S for all hyperparameter axes. All runs write to `experiment_outputs/Jul24/`.
 
 Each `seed` independently controls:
 - **Patient split** — which patients go to train / val / test (70 / 15 / 15)
 - **Model initialisation** — weight init and dropout randomness
 
-**Sweep structure:**
+**Sweep structure** (5 seeds each):
 
 | Sweep | Variants | Fixed | Runs |
 |---|---|---|---|
-| `arch_sweep/` | S / M / L | default lr/wd/dropout | 15 |
-| `lr_sweep/` | LR1–LR5 (5e-5 → 1e-3) | arch S, default wd/dropout | 25 |
-| `wd_sweep/` | WD1–WD5 (0.0 → 0.2) | arch S, default lr/dropout | 25 |
-| `dropout_sweep/` | D1–D5 (0.1 → 0.5) | arch S, default lr/wd | 25 |
-| **Total** | | | **90** |
+| `arch_sweep/` | S / M / L | default lr/wd/dropout/ls | 15 |
+| `lr_sweep/` | LR1–LR5 (5e-5 → 1e-3) | arch S, default wd/dropout/ls | 25 |
+| `wd_sweep/` | WD1–WD5 (1e-2 → 4e-1) | arch S, default lr/dropout/ls | 25 |
+| `dropout_sweep/` | D1–D5 (0.2 → 0.6) | arch S, default lr/wd/ls | 25 |
+| `ls_sweep/` | LS1–LS5 (0.05 → 0.25) | arch S, default lr/wd/dropout | 25 |
+| **Total** | | | **115** |
 
-Architecture S (`d_model=64, num_heads=4, num_layers=1, ff_dim=128`) is fixed for all hyperparameter sweeps — a safer prior than M for ~1,800 training samples.
+Architecture S (`d_model=64, num_heads=4, num_layers=1, ff_dim=128`) is fixed for all hyperparameter sweeps.
 
 ```bash
 python run_train.py
 ```
 
-### `run_label_smoothing_ablation.py`
+### `run_comparisons.py`
 
-Label smoothing sweep (LS1–LS5: 0.0 → 0.3) using arch S and A0 embedding, all other hyperparameters at their defaults. Kept separate so it can be submitted as an independent HPC job.
+Generates all sweep comparison plots in one command. Variants with missing results are skipped automatically — safe to run incrementally while training is in progress.
 
 ```bash
-python run_label_smoothing_ablation.py
+python run_comparisons.py              # all sweeps
+python run_comparisons.py --sweep arch lr   # specific sweeps only
+python run_comparisons.py --show            # display instead of saving
 ```
 
-Outputs to `experiment_outputs/July23/ls_sweep/`.
+Figures are saved to `experiment_outputs/Jul24/comparisons/`.
 
 ### `run_mamba.py`
 
@@ -532,13 +539,11 @@ python run_mamba.py
 
 ### `run_xgboost.py`
 
-XGBoost baseline using hand-crafted features derived from the binary modeling table (drug class exposure flags, baseline LVEF, pre-existing CV history, age). Produces AUROC and a feature importance plot. Useful as a non-sequential reference point to contextualize transformer performance.
+XGBoost baseline using hand-crafted features derived from the binary modeling table. Does not require a tokenization step — reads directly from `cohort_outputs/<name>/final_cycle_binary_modeling_table.csv`.
 
 ```bash
 python run_xgboost.py
 ```
-
-Does not require a tokenization step — reads directly from `cohort_outputs/<name>/final_cycle_binary_modeling_table.csv`.
 
 ### `run_interpretation.py`
 
@@ -548,12 +553,10 @@ Batch interpretability runner. Define samples in `RUNS`, then:
 python run_interpretation.py
 ```
 
-Each entry calls `interpretation/interpret.py` (attention heatmaps + rollout + IG) followed by `interpretation/visualize_attributions.py` (comparison chart + event-type breakdown + scatter).
-
 ```python
 _BASE = dict(
     model_dir     = REPO_ROOT / "experiment_outputs" / "run1",
-    data_dir      = REPO_ROOT / "tokenization_outputs" / "Jul17_512_all_labs",
+    data_dir      = REPO_ROOT / "tokenization_outputs" / "Jul24_512_v2",
     ig_steps      = 100,
     top_k         = 30,
     skip_ig       = False,
@@ -581,16 +584,8 @@ RUNS = [
 | `skip_ig` | `False` | Skip IG if captum is not installed |
 | `top_k` | `30` | Top-K tokens in bar charts |
 | `run_visualize` | `True` | Run `visualize_attributions` after `interpret` |
-| `checkpoint_metric` | `"auroc"` | Which checkpoint to load (`best_model_{metric}.pt`); falls back to `best_model.pt` for older runs |
+| `checkpoint_metric` | `"auroc"` | Which checkpoint to load (`best_model_{metric}.pt`) |
 | `device` | `"auto"` | `auto`, `cpu`, `cuda`, or `mps` |
-
-### `run_pipeline.py`
-
-Full end-to-end run. Toggle stages with `RUN_*` flags at the top of the file.
-
-```bash
-python run_pipeline.py
-```
 
 ---
 
@@ -633,11 +628,9 @@ Runs a trained checkpoint on a full data split and reports aggregate metrics and
 ```bash
 python evaluation/evaluate_model.py --model-dir experiment_outputs/run1
 python evaluation/evaluate_model.py --model-dir experiment_outputs/run1 --split val
-python evaluation/evaluate_model.py --model-dir experiment_outputs/run1 \
-    --output-csv experiment_outputs/run1/test_results.csv
 ```
 
-Reports: AUROC, AUPRC, F1, sensitivity, specificity, accuracy, precision, confusion matrix. The results panel shows which checkpoint was loaded.
+Reports: AUROC, AUPRC, F1, sensitivity, specificity, accuracy, precision, confusion matrix.
 
 | Argument | Default | Description |
 |---|---|---|
@@ -646,93 +639,47 @@ Reports: AUROC, AUPRC, F1, sensitivity, specificity, accuracy, precision, confus
 | `--split` | `test` | `train`, `val`, or `test` |
 | `--batch-size` | `32` | Inference batch size |
 | `--threshold` | `0.5` | Decision threshold for F1 / sensitivity / specificity |
-| `--checkpoint-metric` | `auroc` | Which checkpoint to load (`best_model_{metric}.pt`); falls back to `best_model.pt` for older runs |
+| `--checkpoint-metric` | `auroc` | Which checkpoint to load (`best_model_{metric}.pt`) |
 | `--output-csv` | — | Optional path to save per-sample results |
 
 ### `evaluation/compare_ablations.py`
 
-Scans an experiment directory for test metrics files, groups by ablation ID, and reports mean ± std across seeds for all metrics (AUROC, AUPRC, F1, sensitivity, specificity) with a bar chart.
-
-When `--metric` is set, loads `test_metrics_{metric}.json` (the checkpoint optimised for that metric) and shows that metric's bar chart. Falls back to `test_metrics.json` for older runs.
+Scans an experiment directory for test metrics files, groups by ablation ID, and reports mean ± std across seeds for all metrics with a bar chart.
 
 ```bash
-python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/
-python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/ --sort auprc --metric auprc
-python evaluation/compare_ablations.py experiment_outputs/Jul1_ablations/ \
-    --save experiment_outputs/Jul1_ablations/comparison.png --metric f1
+python evaluation/compare_ablations.py experiment_outputs/Jul24/lr_sweep/
+python evaluation/compare_ablations.py experiment_outputs/Jul24/lr_sweep/ --sort auprc --metric auprc
 ```
-
-| Argument | Default | Description |
-|---|---|---|
-| `--sort` | `id` | Sort rows by: `id`, `auroc`, `auprc`, `f1`, `sensitivity`, `specificity` |
-| `--metric` | `auroc` | Metric shown in the bar chart; also controls which checkpoint's results are loaded |
-| `--save` | — | Save bar chart to this path (PNG/PDF) |
-| `--no-plot` | off | Print table only, skip the bar chart |
 
 Expected layout:
 ```
-experiment_outputs/Jul1_ablations/
-  A0/seed42/test_metrics.json
-  A0/seed42/test_metrics_auprc.json
-  A0/seed43/test_metrics.json
+experiment_outputs/Jul24/lr_sweep/
+  LR1/seed42/test_metrics.json
+  LR1/seed52/test_metrics.json
   ...
 ```
 
 ### `evaluation/plot_history.py`
 
-Plots training loss and per-metric validation curves from `history.json`. Pass a **variant directory** (parent of seed subdirectories) to aggregate across seeds — the solid line shows the mean and the shaded band shows ±1 std. Pass a single seed directory for no aggregation. Each metric panel shows a compact best-value annotation (`mean ± std @ epoch`).
+Plots training loss and per-metric validation curves from `history.json`. Pass a variant directory to aggregate across seeds (mean ± std band), or a single seed directory for no aggregation.
 
 ```bash
-# One variant — aggregates seed* subdirs automatically
 python evaluation/plot_history.py \
-    --model-dir experiment_outputs/July23/arch_sweep/M
+    --model-dir experiment_outputs/Jul24/arch_sweep/M
 
-# Compare variants (one mean±std line per variant)
 python evaluation/plot_history.py \
-    --model-dir experiment_outputs/July23/arch_sweep/S \
-                experiment_outputs/July23/arch_sweep/M \
-                experiment_outputs/July23/arch_sweep/L \
+    --model-dir experiment_outputs/Jul24/arch_sweep/S \
+                experiment_outputs/Jul24/arch_sweep/M \
+                experiment_outputs/Jul24/arch_sweep/L \
     --save arch_sweep.png
-
-# Single seed directory — no aggregation, no band
-python evaluation/plot_history.py \
-    --model-dir experiment_outputs/July23/arch_sweep/M/seed42
-
-# Choose metrics
-python evaluation/plot_history.py \
-    --model-dir experiment_outputs/July23/lr_sweep/LR3 \
-    --metrics auroc auprc f1 sensitivity specificity
 ```
 
 | Argument | Default | Description |
 |---|---|---|
 | `--model-dir` | required | Variant dir (aggregates `seed*/history.json`) or single seed dir |
-| `--metrics` | `auroc auprc f1` | Which validation metrics to plot (one panel each) |
+| `--metrics` | `auroc auprc f1` | Which validation metrics to plot |
 | `--save` | — | Save figure to this path (PNG/PDF/SVG) |
 | `--dpi` | `150` | Output DPI when saving |
-| `--figsize` | auto | Figure width and height in inches |
-
-### `run_comparisons.py`
-
-Generates all sweep comparison plots in one command — an alternative to calling `plot_history.py` from the CLI for each sweep. Calls `plot()` directly (no subprocess). Variants with missing results are skipped automatically, so this can be run incrementally while training is still in progress.
-
-```bash
-# All sweeps
-python run_comparisons.py
-
-# Specific sweeps only
-python run_comparisons.py --sweep arch lr
-
-# Display interactively instead of saving
-python run_comparisons.py --show
-```
-
-| Argument | Default | Description |
-|---|---|---|
-| `--sweep` | all | Which sweeps to plot: `arch`, `lr`, `wd`, `dropout`, `ls` |
-| `--show` | off | Display interactively instead of saving to file |
-
-Figures are saved to `experiment_outputs/July23/comparisons/`.
 
 ---
 
@@ -742,7 +689,7 @@ Figures are saved to `experiment_outputs/July23/comparisons/`.
 python model_src/embedding_layers.py        # embedding layer
 python model_src/ehr_encoder.py             # transformer architecture + return_attention
 python model_src/ehr_mamba.py               # Mamba architecture (requires CUDA + mamba-ssm)
-python model_src/dataset.py tokenization_outputs/ver1   # DataLoader
+python model_src/dataset.py tokenization_outputs/Jul24_512_v2   # DataLoader
 ```
 
 ---
@@ -752,73 +699,85 @@ python model_src/dataset.py tokenization_outputs/ver1   # DataLoader
 ```
 MIMIC-Cardio-Oncology/
 ├── cohort_src/
-│   ├── cohort_cli.py                  CLI entry point for cohort generation
-│   └── generate_cycle_modeling_table.py  DuckDB SQL chain → binary modeling table
+│   ├── cohort_cli.py                      CLI entry point for cohort generation
+│   └── generate_cycle_modeling_table.py   DuckDB SQL chain → binary modeling table
 ├── configs/
-│   ├── cohort_config.py               CohortConfig dataclass
-│   ├── tokenization_config.py         TokenizationConfig dataclass
-│   ├── train_config.py                TrainConfig dataclass
-│   └── interpretation_config.py       InterpretationConfig dataclass
+│   ├── cohort_config.py                   CohortConfig dataclass
+│   ├── tokenization_config.py             TokenizationConfig dataclass
+│   ├── train_config.py                    TrainConfig dataclass
+│   └── interpretation_config.py          InterpretationConfig dataclass
 ├── data_exploration/
-│   ├── inspect_patient.py             Terminal patient sequence viewer
-│   └── *.ipynb                        Exploratory notebooks
+│   ├── inspect_patient.py                 Terminal patient sequence viewer
+│   └── *.ipynb                            Exploratory notebooks
 ├── evaluation/
-│   ├── evaluate_model.py              Per-split metrics + per-sample table
-│   ├── compare_ablations.py           Mean ± std across seeds, all metrics
-│   └── plot_history.py                Training curves (mean ± std across seeds)
+│   ├── evaluate_model.py                  Per-split metrics + per-sample table
+│   ├── compare_ablations.py               Mean ± std across seeds, all metrics
+│   └── plot_history.py                    Training curves (mean ± std across seeds)
 ├── interpretation/
-│   ├── interpret.py                   Attention heatmaps + rollout + Integrated Gradients
-│   └── visualize_attributions.py      Summary plots from attributions.csv
+│   ├── interpret.py                       Attention heatmaps + rollout + Integrated Gradients
+│   └── visualize_attributions.py          Summary plots from attributions.csv
 ├── model_src/
-│   ├── embedding_layers.py            EHR_Event_Embedding + TimeEmbeddingLayer
-│   ├── ehr_encoder.py                 EHR_Encoder (Transformer, return_attention hook)
-│   ├── ehr_mamba.py                   EHR_Mamba (bidirectional Mamba)
-│   ├── mamba_embedding.py             Mamba-specific embedding
-│   ├── mamba_train.py                 Mamba training loop
-│   ├── train.py                       Transformer training loop
-│   └── dataset.py                     EHRDataset + DataLoader helpers
+│   ├── embedding_layers.py                EHR_Event_Embedding + TimeEmbeddingLayer
+│   ├── ehr_encoder.py                     EHR_Encoder (Transformer, return_attention hook)
+│   ├── ehr_mamba.py                       EHR_Mamba (bidirectional Mamba)
+│   ├── mamba_embedding.py                 Mamba-specific embedding
+│   ├── mamba_train.py                     Mamba training loop
+│   ├── train.py                           Transformer training loop
+│   └── dataset.py                         EHRDataset + DataLoader helpers
 ├── sql_files/
-│   └── drug_cycles_sql/               Numbered DuckDB SQL chain (00→06)
+│   ├── drug_cycles_sql/
+│   │   ├── jul17/                         Jun 23 SQL chain (00→06) — Jul17 training data
+│   │   └── jul24/                         Jul 24 SQL chain (00→06) — revised definitions
+│   ├── prescriptions_sql/
+│   │   ├── jul17/                         Jun 23 prescriptions SQL
+│   │   └── jul24/                         Jul 24 prescriptions SQL (expanded drug list)
+│   ├── diagnoses_sql/                     Shared across versions
+│   └── ...                                Other SQL directories (echo, ecg, procedures)
 ├── tokenization_src/
-│   ├── tokenize_cycle_sequences.py    Core tokenizer
-│   ├── tokenize_cli.py                CLI entry point for tokenization
-│   ├── split_dataset.py               Patient-level stratified split
-│   └── summarize_tokenization.py      Summary statistics + figures
-├── run_cohort.py                      Runner: cohort generation
-├── run_tokenization.py                Runner: tokenization variants
-├── run_train.py                       Runner: arch + lr + wd + dropout sweeps (90 runs)
-├── run_label_smoothing_ablation.py    Runner: label smoothing sweep (25 runs)
-├── run_comparisons.py                 Runner: generate all sweep comparison plots
-├── run_mamba.py                       Runner: Mamba training
-├── run_xgboost.py                     Runner: XGBoost baseline
-├── run_interpretation.py              Runner: batch xAI interpretation
-└── run_pipeline.py                    Runner: full end-to-end pipeline
+│   ├── tokenize_cycle_sequences.py        Core tokenizer
+│   ├── tokenize_cli.py                    CLI entry point for tokenization
+│   ├── split_dataset.py                   Patient-level stratified split
+│   └── summarize_tokenization.py          Summary statistics + figures
+├── run_cohort.py                          Runner: cohort generation (set SQL version at top)
+├── run_tokenization.py                    Runner: tokenization variants
+├── run_pipeline.py                        Runner: cohort + tokenization in one go
+├── run_train.py                           Runner: 5-axis hyperparameter sweep (115 runs)
+├── run_comparisons.py                     Runner: generate all sweep comparison plots
+├── run_mamba.py                           Runner: Mamba training
+├── run_xgboost.py                         Runner: XGBoost baseline
+└── run_interpretation.py                  Runner: batch xAI interpretation
 ```
 
 ---
 
 ## Typical full run
 
-**Via runner scripts** (edit `data_dir` in each file first):
+**Via runner scripts** (edit variables at the top of each file first):
 
 ```bash
-python run_cohort.py
-python run_tokenization.py
-python run_train.py
-python run_interpretation.py   # after adding samples to RUNS
+python run_cohort.py        # builds cohort_outputs/cycle_modeling_July24_v2/
+python run_tokenization.py  # builds tokenization_outputs/Jul24_512_v2/
+python run_train.py         # runs 115-run sweep → experiment_outputs/Jul24/
+python run_interpretation.py
+```
+
+Or all data pipeline stages at once:
+
+```bash
+python run_pipeline.py
 ```
 
 **Via CLI:**
 
 ```bash
-# 1. Build cohort
-python cohort_src/cohort_cli.py --data-dir <DATA_DIR> --name cycle_modeling_v4
+# 1. Build cohort (Jul 24 SQL)
+python cohort_src/cohort_cli.py --data-dir <DATA_DIR> --name cycle_modeling_July24_v2
 
-# 2. Tokenize (all labs, visit delimiters)
+# 2. Tokenize
 python tokenization_src/tokenize_cli.py \
     --data-dir <DATA_DIR> \
-    --cohort cycle_modeling_v4 \
-    --name Jul17_512_all_labs \
+    --cohort cycle_modeling_July24_v2 \
+    --name Jul24_512_v2 \
     --max-seq-len 512 \
     --insert-visit-delimiters \
     --include-all-labs \
@@ -826,35 +785,38 @@ python tokenization_src/tokenize_cli.py \
 
 # 3. Train
 python model_src/train.py \
-    --data-dir tokenization_outputs/Jul17_512_all_labs \
+    --data-dir tokenization_outputs/Jul24_512_v2 \
     --output-dir experiment_outputs/run1 \
     --seed 42
 
 # 4. Evaluate
 python evaluation/evaluate_model.py --model-dir experiment_outputs/run1
 
-# 5. Interpret a specific patient
+# 5. Interpret
 python interpretation/interpret.py \
     --model-dir experiment_outputs/run1 \
-    --data-dir tokenization_outputs/Jul17_512_all_labs \
+    --data-dir tokenization_outputs/Jul24_512_v2 \
     --subject-id 10006008 --cycle-number 1
 ```
 
-### Hyperparameter sweep (90 runs + 25 label smoothing)
+### Hyperparameter sweep (115 runs)
 
 ```bash
-# Arch + lr + wd + dropout sweeps (90 runs total):
+# Run all 5 sweeps (115 runs total):
 python run_train.py
-
-# Label smoothing sweep (25 runs, separate job):
-python run_label_smoothing_ablation.py
 
 # Generate all comparison plots after training:
 python run_comparisons.py
 
-# Or regenerate a specific sweep only:
+# Specific sweep only:
 python run_comparisons.py --sweep lr
 
 # Compare test metrics across variants:
-python evaluation/compare_ablations.py experiment_outputs/July23/lr_sweep/ --sort auroc --metric auroc
+python evaluation/compare_ablations.py experiment_outputs/Jul24/lr_sweep/ --sort auroc --metric auroc
 ```
+
+### Adding a new SQL version
+
+1. Create `sql_files/drug_cycles_sql/<date>/` and `sql_files/prescriptions_sql/<date>/` with the new SQL files.
+2. Set the new paths in `run_cohort.py` and choose a new `OUTPUT_NAME`.
+3. Run `python run_cohort.py`, then `python run_tokenization.py`.

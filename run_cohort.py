@@ -1,32 +1,39 @@
 """
 run_cohort.py
 
-Run this once (or when SQL logic changes) to build the cohort table.
+Build the cohort table. Set the output name and SQL directories below, then run:
 
     python run_cohort.py
+
+SQL directory options:
+    sql_files/drug_cycles_sql/jul17/  — Jun 23 definitions (Jul17 training data)
+    sql_files/drug_cycles_sql/jul24/  — Jul 24 definitions (revised cardiotoxicity)
 """
 
 from pathlib import Path
 
-from configs import CohortConfig
 import cohort_src.generate_cycle_modeling_table as cohort_module
-
-# ── config ────────────────────────────────────────────────────────────────────
 
 REPO_ROOT = Path(__file__).resolve().parent
 
-cfg = CohortConfig(
-    data_dir    = REPO_ROOT.parent / "MIMIC_IV_raw_data"
-    output_name = "cycle_modeling_July24_v2",
-)
-
-# ── run ───────────────────────────────────────────────────────────────────────
+# ── configure here ────────────────────────────────────────────────────────────
+OUTPUT_NAME           = "cycle_modeling_July24_v2"
+CYCLE_SQL_DIR         = REPO_ROOT / "sql_files" / "drug_cycles_sql" / "jul24"
+PRESCRIPTIONS_SQL_DIR = REPO_ROOT / "sql_files" / "prescriptions_sql" / "jul24"
+# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    print(f"data_dir    : {cfg.data_dir}")
-    print(f"output_dir  : {cfg.output_dir}")
+    data_dir = REPO_ROOT.parent / "MIMIC_IV_raw_data"
+
+    print(f"output_name           : {OUTPUT_NAME}")
+    print(f"cycle_sql_dir         : {CYCLE_SQL_DIR.name}")
+    print(f"prescriptions_sql_dir : {PRESCRIPTIONS_SQL_DIR.name}")
+    print(f"data_dir              : {data_dir}")
     print()
+
     cohort_module.main(
-        data_location = cfg.data_dir,
-        output_name   = cfg.output_name,
+        data_location         = data_dir,
+        output_name           = OUTPUT_NAME,
+        cycle_sql_dir         = CYCLE_SQL_DIR,
+        prescriptions_sql_dir = PRESCRIPTIONS_SQL_DIR,
     )

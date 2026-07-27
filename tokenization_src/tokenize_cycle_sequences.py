@@ -188,11 +188,9 @@ def _build_diagnoses(hadm_ids: set[int], admissions: pd.DataFrame) -> pd.DataFra
         "diagnosis::" + dx["icd_code"].astype(str)
         + "_ICDver" + dx["icd_version"].astype(str)
     )
-    dx["event_priority"]      = dx["seq_num"]
-    dx["admission_dischtime"] = pd.NaT  # diagnoses anchored at dischtime — no leakage risk
+    dx["event_priority"] = dx["seq_num"]
     return dx[["subject_id", "hadm_id", "admittime", "event_time",
-               "event_type", "concept_token", "event_priority", "visit_id",
-               "admission_dischtime"]]
+               "event_type", "concept_token", "event_priority", "visit_id"]]
 
 
 def _build_procedures(hadm_ids: set[int], admissions: pd.DataFrame) -> pd.DataFrame:
@@ -214,11 +212,9 @@ def _build_procedures(hadm_ids: set[int], admissions: pd.DataFrame) -> pd.DataFr
         "procedure::" + proc["icd_code"].astype(str)
         + "_ICDver" + proc["icd_version"].astype(str)
     )
-    proc["event_priority"]      = proc["seq_num"]
-    proc["admission_dischtime"] = pd.NaT  # procedures use chartdate — no ongoing-admission risk
+    proc["event_priority"] = proc["seq_num"]
     return proc[["subject_id", "hadm_id", "admittime", "event_time",
-                 "event_type", "concept_token", "event_priority", "visit_id",
-                 "admission_dischtime"]]
+                 "event_type", "concept_token", "event_priority", "visit_id"]]
 
 
 def _build_medications(hadm_ids: set[int], admissions: pd.DataFrame, bucket: bool = False) -> pd.DataFrame:
@@ -234,11 +230,10 @@ def _build_medications(hadm_ids: set[int], admissions: pd.DataFrame, bucket: boo
     rx = rx[rx["hadm_id"].isin(hadm_ids)].dropna(subset=["starttime"]).copy()
     print(f"  prescriptions.csv     → {len(rx):,} rows ({time.time()-t0:.1f}s)")
     rx = rx.merge(
-        admissions[["hadm_id", "admittime", "dischtime", "visit_id"]],
+        admissions[["hadm_id", "admittime", "visit_id"]],
         on="hadm_id", how="left",
     )
-    rx["event_time"]          = rx["starttime"]
-    rx["admission_dischtime"] = rx["dischtime"]
+    rx["event_time"] = rx["starttime"]
     rx["event_type"] = "medication"
     rx["drug_norm"]  = rx["drug"].astype(str).str.lower().str.strip()
 
@@ -271,11 +266,10 @@ def _build_medications(hadm_ids: set[int], admissions: pd.DataFrame, bucket: boo
     else:
         rx["concept_token"] = "medication::" + rx["drug_norm"]
 
-    rx = rx.drop(columns=["drug_norm", "dischtime"])
+    rx = rx.drop(columns=["drug_norm"])
     rx["event_priority"] = rx.groupby(["subject_id", "hadm_id", "starttime"]).cumcount()
     return rx[["subject_id", "hadm_id", "admittime", "event_time",
-               "event_type", "concept_token", "event_priority", "visit_id",
-               "admission_dischtime"]]
+               "event_type", "concept_token", "event_priority", "visit_id"]]
 
 
 def _build_labs(subject_ids: set[int], hadm_ids: set[int],
@@ -315,13 +309,12 @@ def _build_labs(subject_ids: set[int], hadm_ids: set[int],
     print(f"    {len(lab):,} {lab_desc} lab rows retained for {lab['subject_id'].nunique():,} patients")
 
     lab = lab.merge(
-        admissions[["hadm_id", "admittime", "dischtime", "visit_id"]],
+        admissions[["hadm_id", "admittime", "visit_id"]],
         on="hadm_id", how="left",
     )
-    lab["event_time"]          = lab["storetime"]
-    lab["admission_dischtime"] = lab["dischtime"]
-    lab["event_type"]          = "lab"
-    lab["event_priority"]      = 0
+    lab["event_time"]     = lab["storetime"]
+    lab["event_type"]     = "lab"
+    lab["event_priority"] = 0
 
     if bucket:
         cutoffs = (
@@ -348,10 +341,8 @@ def _build_labs(subject_ids: set[int], hadm_ids: set[int],
     else:
         lab["concept_token"] = "lab::" + lab["itemid"].astype(str)
 
-    lab = lab.drop(columns=["dischtime"])
     return lab[["subject_id", "hadm_id", "admittime", "event_time",
-                "event_type", "concept_token", "event_priority", "visit_id",
-                "admission_dischtime"]]
+                "event_type", "concept_token", "event_priority", "visit_id"]]
 
 
 def build_master_events(
@@ -375,9 +366,8 @@ def build_master_events(
                        only_abnormal_labs=only_abnormal_labs)
 
     master = pd.concat([dx, proc, med, labs], ignore_index=True)
-    master["admittime"]          = pd.to_datetime(master["admittime"],          errors="coerce")
-    master["event_time"]         = pd.to_datetime(master["event_time"],         errors="coerce")
-    master["admission_dischtime"] = pd.to_datetime(master["admission_dischtime"], errors="coerce")
+    master["admittime"]   = pd.to_datetime(master["admittime"], errors="coerce")
+    master["event_time"]  = pd.to_datetime(master["event_time"], errors="coerce")
     master = master.dropna(subset=["event_time"])
     master["visit_id"]    = master["visit_id"].fillna(0).astype(int)
     master = master.sort_values(
@@ -441,17 +431,6 @@ def tokenize_window(
         [CLS] [V_START] e1 e2 [V_END] [ATT] [V_START] e3 [V_END] ...
     """
     window = patient_events[patient_events["event_time"] < prediction_time].copy()
-
-    # Drop events from hospital admissions still ongoing at prediction_time.
-    # Medications and labs from an ongoing outcome admission (e.g., furosemide or
-    # elevated BNP drawn during the HF admission) would otherwise leak the label,
-    # because the admission's discharge diagnosis hasn't been coded yet.
-    if "admission_dischtime" in window.columns:
-        ongoing = (
-            window["admission_dischtime"].notna()
-            & (window["admission_dischtime"] >= prediction_time)
-        )
-        window = window[~ongoing]
 
     unk_id     = concept_vocab["[UNK]"]
     cls_id     = concept_vocab["[CLS]"]

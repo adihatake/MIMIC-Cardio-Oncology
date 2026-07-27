@@ -1,24 +1,11 @@
 """
 run_tokenization.py
 
-Define tokenization variants in RUNS and execute them all with:
+Tokenize a cohort. Set cohort_name, output names, and flags below, then run:
+
     python run_tokenization.py
 
-Each entry produces an independent output folder under tokenization_outputs/.
-Point run_train.py at the folder you want to train on.
-
-─── Tokenization flags ──────────────────────────────────────────────────────────
-  insert_att               ATT tokens (W0-W3, M1-M11, LT) between visits — needed
-                           for C1/C2 embedding ablations
-  insert_visit_delimiters  [V_START]/[V_END] around each visit block
-  bucket_labs              Append per-itemid quantile bucket (_Q1–_Q4) to lab
-                           tokens — changes vocab, requires re-tokenization
-  bucket_medications       Append per-drug dose-tier bucket (_Q1–_Q4) to medication
-                           tokens — changes vocab, requires re-tokenization
-  only_abnormal_labs       (default True) Include only flagged-abnormal lab results
-  include_all_labs         (default False) Include all lab results regardless of flag;
-                           mutually exclusive with only_abnormal_labs
-────────────────────────────────────────────────────────────────────────────────
+Run after run_cohort.py produces the cohort you want to tokenize.
 """
 
 from pathlib import Path
@@ -29,33 +16,28 @@ import tokenization_src.summarize_tokenization as summary_module
 
 REPO_ROOT = Path(__file__).resolve().parent
 
-# ── shared settings ───────────────────────────────────────────────────────────
+# ── configure here ────────────────────────────────────────────────────────────
 _BASE = dict(
-    data_dir    = REPO_ROOT.parent / "MIMIC_IV_raw_data",
-    cohort_name = "cycle_modeling_July24_v2",
-    max_seq_len = 512,
-    run_split   = False,
-    run_summarize = True,
+    data_dir                = REPO_ROOT.parent / "MIMIC_IV_raw_data",
+    cohort_name             = "cycle_modeling_July24_v2",
+    max_seq_len             = 512,
+    run_split               = False,
+    run_summarize           = True,
     insert_visit_delimiters = True,
-    only_abnormal_labs = False,
-    include_all_labs = True
-
+    only_abnormal_labs      = False,
+    include_all_labs        = True,
 )
 
-# ── tokenization variants ─────────────────────────────────────────────────────
 RUNS = [
-    # Base: no ATT tokens, no bucketing
-    TokenizationConfig(**_BASE,
-        output_name = "Jul24_512_v2",
-    ),
+    TokenizationConfig(**_BASE, output_name="Jul24_512_v2"),
 ]
-
-# ── run ───────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     for i, cfg in enumerate(RUNS, 1):
         print(f"\n{'=' * 55}")
         print(f"  Tokenization {i}/{len(RUNS)}  →  {cfg.output_dir.name}")
+        print(f"    cohort_name            : {cfg.cohort_name}")
         print(f"    insert_att             : {cfg.insert_att}")
         print(f"    insert_visit_delimiters: {cfg.insert_visit_delimiters}")
         print(f"    bucket_labs            : {cfg.bucket_labs}")
