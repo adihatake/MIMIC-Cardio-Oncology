@@ -140,6 +140,7 @@ class EHR_Encoder(nn.Module):
             use_time=use_time,
             use_age=use_age,
             time_scaling_factor=time_scaling_factor,
+            dropout=dropout,
         )
 
         self.layers = nn.ModuleList([

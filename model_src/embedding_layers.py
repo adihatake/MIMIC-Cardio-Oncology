@@ -99,6 +99,7 @@ class EHR_Event_Embedding(nn.Module):
             use_time:            bool  = False,
             use_age:             bool  = False,
             time_scaling_factor: float = 365.25,
+            dropout:             float = 0.1,
             ) -> None:
 
         super().__init__()
@@ -127,7 +128,7 @@ class EHR_Event_Embedding(nn.Module):
         self.proj = nn.Linear(4 * d, d)
 
         self.layer_norm = nn.LayerNorm(d)
-        self.dropout    = nn.Dropout(0.1)
+        self.dropout    = nn.Dropout(dropout)
 
     def forward(
         self,
