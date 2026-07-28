@@ -2,6 +2,15 @@
 mimic-iv-3.1/
 mimic-iv-ecg/
 mimic-iv-echo/
+data_outputs/
+cohort_outputs/
+tokenization_outputs/
+experiment_outputs/
+
+# Large files / patient data
+*.parquet
+*.pt
+*.pth
 
 # Dev
 .DS_Store
