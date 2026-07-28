@@ -51,7 +51,7 @@ SELECT
     p.subject_id,
     COALESCE(
         MAX(CAST(a.deathtime AS TIMESTAMP)),  -- precise in-hospital death time
-        CAST(p.dod AS TIMESTAMP)              -- fallback: dod midnight for out-of-hospital deaths
+        CAST(MAX(p.dod) AS TIMESTAMP)         -- fallback: dod midnight for out-of-hospital deaths
     ) AS death_time
 FROM read_csv_auto('mimic-iv-3.1/hosp/patients.csv') p
 INNER JOIN hf_patient_first_drug f ON p.subject_id = f.subject_id
