@@ -9,8 +9,9 @@ To add a new pipeline: define a PipelineConfig in cohort_src/cohort_pipeline.py
 and register it in PIPELINE_REGISTRY. No other Python changes needed.
 
 PIPELINE options  (see cohort_src/cohort_pipeline.py):
-    "hf_cardiotox"  — HF endpoint (3 drug classes, per-class monitoring windows)
-    "main"          — LVEF + CV toxicity endpoint
+    "hf_cardiotox_v2" — combined CTRCD endpoint (ICD HF + LVEF + GLS, 3 drug classes)
+    "hf_cardiotox"    — ICD HF endpoint only (3 drug classes, per-class windows)
+    "main"            — LVEF + CV toxicity endpoint
 """
 
 from pathlib import Path
@@ -19,8 +20,8 @@ import cohort_src.generate_cohort as cohort_module
 REPO_ROOT = Path(__file__).resolve().parent
 
 # ── configure here ────────────────────────────────────────────────────────────
-PIPELINE    = "hf_cardiotox"    # "hf_cardiotox" | "main"
-OUTPUT_NAME = "hf_cardiotox_v1"
+PIPELINE    = "hf_cardiotox_v2"    # "hf_cardiotox_v2" | "hf_cardiotox" | "main"
+OUTPUT_NAME = "hf_cardiotox_v2"
 
 # Override SQL dirs only when pointing at a non-default version subdirectory
 # (e.g. "jul28_alt" instead of the canonical "hf_cardiotox" folder).

@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 # ── configure here ────────────────────────────────────────────────────────────
 _BASE = dict(
     data_dir                = REPO_ROOT.parent / "MIMIC_IV_raw_data",
-    cohort_name             = "hf_cardiotox_v1",
+    cohort_name             = "hf_cardiotox_v2",
     max_seq_len             = 512,
     run_split               = False,
     run_summarize           = True,
@@ -32,7 +32,7 @@ _BASE = dict(
 )
 
 RUNS = [
-    TokenizationConfig(**_BASE, output_name="hf_cardiotox_v1"),
+    TokenizationConfig(**_BASE, output_name="hf_cardiotox_v2"),
 ]
 # ─────────────────────────────────────────────────────────────────────────────
 

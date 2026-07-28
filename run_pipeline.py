@@ -10,8 +10,9 @@ For day-to-day work, run the individual scripts instead:
     python run_tokenization.py
 
 PIPELINE options  (see cohort_src/cohort_pipeline.py):
-    "hf_cardiotox"  — HF endpoint (3 drug classes, per-class monitoring windows)
-    "main"          — LVEF + CV toxicity endpoint
+    "hf_cardiotox_v2" — combined CTRCD endpoint (ICD HF + LVEF + GLS, 3 drug classes)
+    "hf_cardiotox"    — ICD HF endpoint only (3 drug classes, per-class windows)
+    "main"            — LVEF + CV toxicity endpoint
 """
 
 from pathlib import Path
@@ -24,8 +25,8 @@ import tokenization_src.summarize_tokenization as summary_module
 REPO_ROOT = Path(__file__).resolve().parent
 
 # ── configure here ────────────────────────────────────────────────────────────
-PIPELINE           = "hf_cardiotox"   # "hf_cardiotox" | "main"
-COHORT_OUTPUT_NAME = "hf_cardiotox_v1"
+PIPELINE           = "hf_cardiotox_v2"    # "hf_cardiotox_v2" | "hf_cardiotox" | "main"
+COHORT_OUTPUT_NAME = "hf_cardiotox_v2"
 
 RUN_COHORT   = True
 RUN_TOKENIZE = True
