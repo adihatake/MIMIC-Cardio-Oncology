@@ -1,7 +1,7 @@
 """
-generate_cycle_modeling_table.py — backward-compatible shim.
+generate_hf_cardiotox_table.py — backward-compatible shim.
 
-Delegates to generate_cohort.main() with the "main" pipeline config.
+Delegates to generate_cohort.main() with the "hf_cardiotox" pipeline config.
 New code should call generate_cohort.main() directly.
 """
 
@@ -17,7 +17,7 @@ def main(
 ) -> None:
     _main(
         data_location         = data_location,
-        pipeline              = "main",
+        pipeline              = "hf_cardiotox",
         output_name           = output_name,
         cycle_sql_dir         = cycle_sql_dir,
         prescriptions_sql_dir = prescriptions_sql_dir,

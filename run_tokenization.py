@@ -6,6 +6,9 @@ Tokenize a cohort. Set cohort_name, output names, and flags below, then run:
     python run_tokenization.py
 
 Run after run_cohort.py produces the cohort you want to tokenize.
+The tokenizer reads final_cycle_binary_modeling_table.parquet from
+cohort_outputs/<cohort_name>/. For the hf_cardiotox pipeline this is the
+strict binary table (no pre-existing HF or CMP).
 """
 
 from pathlib import Path
@@ -19,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 # ── configure here ────────────────────────────────────────────────────────────
 _BASE = dict(
     data_dir                = REPO_ROOT.parent / "MIMIC_IV_raw_data",
-    cohort_name             = "cycle_modeling_July24_v2",
+    cohort_name             = "hf_cardiotox_v1",
     max_seq_len             = 512,
     run_split               = False,
     run_summarize           = True,
@@ -29,7 +32,7 @@ _BASE = dict(
 )
 
 RUNS = [
-    TokenizationConfig(**_BASE, output_name="Jul24_512_v2"),
+    TokenizationConfig(**_BASE, output_name="hf_cardiotox_v1"),
 ]
 # ─────────────────────────────────────────────────────────────────────────────
 

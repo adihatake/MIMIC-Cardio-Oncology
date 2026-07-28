@@ -144,7 +144,12 @@ def _load_modeling_table() -> pd.DataFrame:
     df["cycle_number"]    = df["cycle_number"].astype(int)
     df["binary_label"]    = df["binary_label"].astype(int)
     df["subject_id"]      = df["subject_id"].astype(int)
-    return df.sort_values(["subject_id", "cycle_number"]).reset_index(drop=True)
+    sort_cols = (
+        ["subject_id", "drug_class", "cycle_number"]
+        if "drug_class" in df.columns
+        else ["subject_id", "cycle_number"]
+    )
+    return df.sort_values(sort_cols).reset_index(drop=True)
 
 
 def _load_patients(subject_ids: set[int]) -> pd.DataFrame:
@@ -587,7 +592,7 @@ def main(
         age_id    = _compute_age_id(sid, pred_time, patients_df)
         age_years = _compute_age_years(sid, pred_time, patients_df)
 
-        samples_meta.append({
+        meta = {
             "subject_id":      sid,
             "cycle_number":    cycle_num,
             "prediction_time": pred_time,
@@ -596,7 +601,10 @@ def main(
             "age_years":       age_years,
             "raw_seq_len":     tok["raw_seq_len"],
             "seq_len":         tok["seq_len"],
-        })
+        }
+        if "drug_class" in row.index:
+            meta["drug_class"] = str(row["drug_class"])
+        samples_meta.append(meta)
         token_sequences.append({**tok, "age_id": age_id, "age_years": age_years, "label": label})
 
     print("Padding sequences and building tensors...")
