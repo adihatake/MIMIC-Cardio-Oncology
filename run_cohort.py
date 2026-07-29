@@ -10,7 +10,8 @@ and register it in PIPELINE_REGISTRY. No other Python changes needed.
 
 PIPELINE options  (see cohort_src/cohort_pipeline.py):
     "anthracycline_only_exposure" — anthracycline-first patients only, combined CTRCD endpoint
-    "hf_cardiotox_v2"            — combined CTRCD endpoint (ICD HF + LVEF + GLS, 3 drug classes)
+    "hf_cardiotox_v2"            — combined CTRCD endpoint (ICD HF + LVEF + GLS, 3 drug classes, ESC 2022 windows)
+    "hf_cardiotox_v2_365d"       — same as hf_cardiotox_v2 but uniform 365-day window for all drug classes
     "hf_cardiotox"               — ICD HF endpoint only (3 drug classes, per-class windows)
     "main"                       — LVEF + CV toxicity endpoint
 """
