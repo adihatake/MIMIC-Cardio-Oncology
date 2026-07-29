@@ -12,6 +12,7 @@ PIPELINE options  (see cohort_src/cohort_pipeline.py):
     "anthracycline_only_exposure" — anthracycline-first patients only, combined CTRCD endpoint
     "hf_cardiotox_v2"            — combined CTRCD endpoint (ICD HF + LVEF + GLS, 3 drug classes, ESC 2022 windows)
     "pan_cancer_ctrcd"           — 10 pan-cancer drug classes, combined CTRCD endpoint, uniform 365-day window
+    "pan_cancer_bimodal"         — same as pan_cancer_ctrcd but acute (90d) vs moderate (365d) windows
     "hf_cardiotox"               — ICD HF endpoint only (3 drug classes, per-class windows)
     "main"                       — LVEF + CV toxicity endpoint
 """
@@ -22,8 +23,8 @@ import cohort_src.generate_cohort as cohort_module
 REPO_ROOT = Path(__file__).resolve().parent
 
 # ── configure here ────────────────────────────────────────────────────────────
-PIPELINE    = "anthracycline_only_exposure"    # see options above
-OUTPUT_NAME = "anthracycline_only_exposure_v1"
+PIPELINE    = "pan_cancer_ctrcd"    # see options above
+OUTPUT_NAME = "pan_cancer_ctrcd_v1"
 
 # Override SQL dirs only when pointing at a non-default version subdirectory
 # (e.g. "jul28_alt" instead of the canonical "hf_cardiotox" folder).
