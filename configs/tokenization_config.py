@@ -20,8 +20,9 @@ class TokenizationConfig:
     insert_visit_delimiters: bool = False  # [V_START]/[V_END] around each visit
     bucket_labs:             bool = False  # append per-itemid quantile bucket (Q1-Q4) to lab tokens
     bucket_medications:      bool = False  # append per-drug dose-tier bucket (Q1-Q4) to medication tokens
-    only_abnormal_labs:      bool = False   # include only flagged-abnormal lab results (default)
-    include_all_labs:        bool = True  # include all lab results regardless of abnormality flag; mutually exclusive with only_abnormal_labs
+    only_abnormal_labs:      bool = False  # include only flagged-abnormal lab results (default)
+    include_all_labs:        bool = True   # include all lab results regardless of abnormality flag; mutually exclusive with only_abnormal_labs
+    cardiac_labs_only:       bool = False  # restrict labs to cardiac-relevant panel (troponin, BNP, creatinine, electrolytes, CBC, LFTs, LDH, CRP)
 
     # ── derived (read-only) ───────────────────────────────────────────────────
     @property

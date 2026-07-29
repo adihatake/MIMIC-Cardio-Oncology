@@ -81,6 +81,7 @@ if __name__ == "__main__":
                 bucket_medications      = cfg.bucket_medications,
                 only_abnormal_labs      = cfg.only_abnormal_labs,
                 include_all_labs        = cfg.include_all_labs,
+                cardiac_labs_only       = cfg.cardiac_labs_only,
             )
             if cfg.run_summarize:
                 summary_module.main(cfg.output_dir)

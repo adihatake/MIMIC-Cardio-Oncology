@@ -106,6 +106,45 @@ TYPE_VOCAB: dict[str, int] = {
     "medication": 4,
 }
 
+# Lab itemids (MIMIC-IV labevents) included when cardiac_labs_only=True.
+# Covers the clinical domains relevant to cardiotoxicity monitoring:
+#   cardiac biomarkers, renal function (cardiorenal syndrome), electrolytes
+#   (arrhythmia risk), haematology (anaemia → increased cardiac demand),
+#   liver function (drug metabolism / hepatotoxicity), and key metabolic markers.
+# Verify against D_LABITEMS.csv if itemids differ in your MIMIC-IV build.
+CARDIAC_LAB_ITEMIDS: frozenset[int] = frozenset({
+    # ── Cardiac biomarkers ────────────────────────────────────────────────────
+    51002,  # Troponin I
+    51003,  # Troponin T
+    52042,  # Troponin T, High Sensitivity (MIMIC-IV 3.x)
+    51214,  # B-Natriuretic Peptide (BNP)
+    50963,  # NT-proBNP
+    # ── Renal function ────────────────────────────────────────────────────────
+    50912,  # Creatinine
+    51006,  # Urea Nitrogen (BUN)
+    # ── Electrolytes ──────────────────────────────────────────────────────────
+    50971,  # Potassium
+    50983,  # Sodium
+    50960,  # Magnesium
+    50902,  # Chloride
+    50882,  # Bicarbonate
+    50893,  # Calcium, Total
+    # ── Haematology ───────────────────────────────────────────────────────────
+    51222,  # Hemoglobin
+    51221,  # Hematocrit
+    51265,  # Platelet Count
+    51301,  # White Blood Cells
+    # ── Liver function ────────────────────────────────────────────────────────
+    50861,  # Alanine Aminotransferase (ALT)
+    50878,  # Aspartate Aminotransferase (AST)
+    50885,  # Bilirubin, Total
+    50862,  # Albumin
+    # ── Metabolic / inflammatory ──────────────────────────────────────────────
+    50931,  # Glucose
+    50954,  # Lactate Dehydrogenase (LDH)
+    50889,  # C-Reactive Protein (CRP)
+})
+
 SPECIAL_TOKENS = ["[PAD]", "[UNK]", "[CLS]", "[V_START]", "[V_END]"]
 
 # ── CEHR-BERT time machinery ──────────────────────────────────────────────────
@@ -279,7 +318,8 @@ def _build_medications(hadm_ids: set[int], admissions: pd.DataFrame, bucket: boo
 
 def _build_labs(subject_ids: set[int], hadm_ids: set[int],
                 admissions: pd.DataFrame, bucket: bool = False,
-                only_abnormal_labs: bool = True) -> pd.DataFrame:
+                only_abnormal_labs: bool = True,
+                cardiac_labs_only: bool = False) -> pd.DataFrame:
     # Because of how massive (18GB) the lab events csv file is, DuckDB reads the 18 GB CSV in
     # parallel and pushes the JOIN filters down into the scan, so only matching rows ever enter memory.
     t0 = time.time()
@@ -292,7 +332,11 @@ def _build_labs(subject_ids: set[int], hadm_ids: set[int],
     if bucket:
         select_cols += ", l.valuenum"
 
-    flag_filter = "AND l.flag IS NOT NULL" if only_abnormal_labs else ""
+    flag_filter   = "AND l.flag IS NOT NULL" if only_abnormal_labs else ""
+    itemid_filter = (
+        f"AND l.itemid IN ({','.join(str(i) for i in sorted(CARDIAC_LAB_ITEMIDS))})"
+        if cardiac_labs_only else ""
+    )
 
     con = duckdb.connect()
     con.register("sid_filter", sid_df)
@@ -304,13 +348,19 @@ def _build_labs(subject_ids: set[int], hadm_ids: set[int],
         INNER JOIN hid_filter USING (hadm_id)
         WHERE l.storetime IS NOT NULL
           {flag_filter}
+          {itemid_filter}
     """).df()
     con.close()
 
     print(f"  labevents.csv         → {len(lab):,} rows ({time.time()-t0:.1f}s)")
     lab["storetime"] = pd.to_datetime(lab["storetime"], errors="coerce")
     lab = lab.dropna(subset=["storetime"])
-    lab_desc = "abnormal inpatient" if only_abnormal_labs else "all inpatient"
+    if cardiac_labs_only:
+        lab_desc = f"cardiac-panel ({len(CARDIAC_LAB_ITEMIDS)} itemids)"
+    elif only_abnormal_labs:
+        lab_desc = "abnormal inpatient"
+    else:
+        lab_desc = "all inpatient"
     print(f"    {len(lab):,} {lab_desc} lab rows retained for {lab['subject_id'].nunique():,} patients")
 
     lab = lab.merge(
@@ -355,6 +405,7 @@ def build_master_events(
     bucket_labs: bool = False,
     bucket_medications: bool = False,
     only_abnormal_labs: bool = True,
+    cardiac_labs_only: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Load and merge all EHR event types into one chronologically sorted DataFrame."""
     print("Loading admissions...")
@@ -368,7 +419,8 @@ def build_master_events(
     print("Loading medications (prescriptions)...")
     med  = _build_medications(hadm_ids, admissions, bucket=bucket_medications)
     labs = _build_labs(subject_ids, hadm_ids, admissions, bucket=bucket_labs,
-                       only_abnormal_labs=only_abnormal_labs)
+                       only_abnormal_labs=only_abnormal_labs,
+                       cardiac_labs_only=cardiac_labs_only)
 
     master = pd.concat([dx, proc, med, labs], ignore_index=True)
     master["admittime"]   = pd.to_datetime(master["admittime"], errors="coerce")
@@ -534,6 +586,7 @@ def main(
     bucket_medications: bool = False,
     only_abnormal_labs: bool = True,
     include_all_labs: bool = False,
+    cardiac_labs_only: bool = False,
 ) -> None:
     if include_all_labs and only_abnormal_labs:
         raise ValueError("include_all_labs=True and only_abnormal_labs=True are mutually exclusive")
@@ -562,7 +615,8 @@ def main(
     print("Building master EHR event timeline...")
     master_df, _ = build_master_events(subject_ids, bucket_labs=bucket_labs,
                                        bucket_medications=bucket_medications,
-                                       only_abnormal_labs=_only_abnormal)
+                                       only_abnormal_labs=_only_abnormal,
+                                       cardiac_labs_only=cardiac_labs_only)
     print(f"  {len(master_df):,} total events loaded")
 
     print("Building concept vocabulary...")
@@ -684,6 +738,8 @@ def main(
         "bucket_medications":      bucket_medications,
         "only_abnormal_labs":      _only_abnormal,
         "include_all_labs":        not _only_abnormal,
+        "cardiac_labs_only":       cardiac_labs_only,
+        "n_cardiac_lab_itemids":   len(CARDIAC_LAB_ITEMIDS) if cardiac_labs_only else None,
     }
     with open(OUTPUT_DIR / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
@@ -715,10 +771,16 @@ if __name__ == "__main__":
     lab_group = p.add_mutually_exclusive_group()
     lab_group.add_argument("--include-all-labs",    action="store_true", help="Include all lab results regardless of abnormality flag (opposite of default).")
     lab_group.add_argument("--only-abnormal-labs",  action="store_true", help="Include only flagged-abnormal lab results (default behaviour; explicit form).")
+    p.add_argument("--cardiac-labs-only", action="store_true",
+                   help=f"Restrict labs to the cardiac-relevant panel ({len(CARDIAC_LAB_ITEMIDS)} itemids: "
+                        "troponin, BNP/NT-proBNP, creatinine, electrolytes, CBC, LFTs, LDH, CRP). "
+                        "Reduces noise and preserves sequence budget for history. "
+                        "Can be combined with --include-all-labs or --only-abnormal-labs.")
     a = p.parse_args()
     main(data_dir=a.data_dir, cohort_name=a.cohort, output_name=a.name,
          max_seq_len=a.max_seq_len, insert_att=a.insert_att,
          insert_visit_delimiters=a.insert_visit_delimiters,
          bucket_labs=a.bucket_labs, bucket_medications=a.bucket_medications,
          include_all_labs=a.include_all_labs,
-         only_abnormal_labs=a.only_abnormal_labs)
+         only_abnormal_labs=a.only_abnormal_labs,
+         cardiac_labs_only=a.cardiac_labs_only)

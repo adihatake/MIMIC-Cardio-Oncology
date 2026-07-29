@@ -32,7 +32,8 @@ _BASE = dict(
 )
 
 RUNS = [
-    TokenizationConfig(**_BASE, output_name="hf_cardiotox_v2"),
+    TokenizationConfig(**_BASE, output_name="hf_cardiotox_v2_all_labs",     cardiac_labs_only=False),
+    TokenizationConfig(**_BASE, output_name="hf_cardiotox_v2_cardiac_labs", cardiac_labs_only=True),
 ]
 # ─────────────────────────────────────────────────────────────────────────────
 
