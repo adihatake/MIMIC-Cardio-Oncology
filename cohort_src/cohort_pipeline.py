@@ -177,10 +177,46 @@ HF_CARDIOTOX_V2_PIPELINE = PipelineConfig(
     unknown_followup_label="unknown_insufficient_followup",
 )
 
+ANTHRACYCLINE_ONLY_PIPELINE = PipelineConfig(
+    name="anthracycline_only_exposure",
+    prescriptions_sql_file="prescriptions_hf_cardiotox.sql",
+    cycle_sql_files=[
+        "00_parameters.sql",
+        "01_drug_classification.sql",
+        "02_cycle_exposures.sql",
+        "03_heart_failure_events.sql",
+        "04_echo_events.sql",
+        "05_combined_cardiotox_event.sql",
+        "06_observation_and_death.sql",
+        "07_final_modeling_table.sql",
+    ],
+    progress_views=[
+        ("hf_cycle_exposures",                                  "hf_cycle_exposures (all classes)"),
+        ("anthracycline_first_patients",                        "anthracycline_first_patients"),
+        ("anthracycline_cycle_exposures",                       "anthracycline_cycle_exposures"),
+        ("first_combined_cardiotox_event",                      "first_combined_cardiotox_event"),
+        ("anthracycline_final_cycle_modeling_table",            "anthracycline_final_cycle_modeling_table"),
+        ("anthracycline_final_binary_modeling_table_strict",    "anthracycline_final_binary_modeling_table_strict"),
+        ("anthracycline_final_binary_modeling_table_inclusive", "anthracycline_final_binary_modeling_table_inclusive"),
+    ],
+    full_table_view="anthracycline_final_cycle_modeling_table",
+    binary_table_views=[
+        ("anthracycline_final_binary_modeling_table_strict",    "anthracycline_final_binary_modeling_table_strict"),
+        ("anthracycline_final_binary_modeling_table_inclusive", "anthracycline_final_binary_modeling_table_inclusive"),
+    ],
+    anchor_view="anthracycline_first_patients",
+    sort_cols=["subject_id", "cycle_number"],
+    drug_class_col="drug_class",
+    positive_col="binary_label",
+    preexisting_cols=["has_pre_existing_hf", "has_pre_existing_cmp"],
+    unknown_followup_label="unknown_insufficient_followup",
+)
+
 # Registry: maps pipeline name string → config object.
 # Add new pipelines here.
 PIPELINE_REGISTRY: dict[str, PipelineConfig] = {
-    "main":            MAIN_PIPELINE,
-    "hf_cardiotox":    HF_CARDIOTOX_PIPELINE,
-    "hf_cardiotox_v2": HF_CARDIOTOX_V2_PIPELINE,
+    "main":                       MAIN_PIPELINE,
+    "hf_cardiotox":               HF_CARDIOTOX_PIPELINE,
+    "hf_cardiotox_v2":            HF_CARDIOTOX_V2_PIPELINE,
+    "anthracycline_only_exposure": ANTHRACYCLINE_ONLY_PIPELINE,
 }
