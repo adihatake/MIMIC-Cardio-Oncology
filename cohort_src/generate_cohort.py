@@ -126,6 +126,9 @@ def main(
         _execute_sql_file(con, path)
     print(f"  {presc_path.relative_to(REPO_ROOT)}")
     _execute_sql_file(con, presc_path)
+    # Materialize oncology_drugs as a table so the prescriptions CSV is scanned
+    # only once — every downstream view otherwise re-reads it from disk.
+    con.execute("CREATE OR REPLACE TABLE oncology_drugs AS SELECT * FROM oncology_drugs")
     print(f"  all_cancer_patients : {_count_rows(con, 'all_cancer_patients'):,} rows")
     print(f"  oncology_drugs      : {_count_rows(con, 'oncology_drugs'):,} rows")
 
@@ -134,6 +137,19 @@ def main(
     for path in cycle_paths:
         print(f"  {path.relative_to(REPO_ROOT)}")
         _execute_sql_file(con, path)
+
+    # Materialize heavy intermediate views and final output views so that
+    # progress counts, full table fetch, and binary table fetches don't each
+    # retrigger the full computation chain (window functions, joins, etc.).
+    _to_materialize = [
+        "hf_cohort_drug_starts",  # cuts recomputation early in all hf_* chains
+        "hf_cycle_exposures",     # expensive window functions used by all downstream views
+        cfg.full_table_view,
+    ] + [v for v, _ in cfg.binary_table_views]
+    for view in _to_materialize:
+        if _view_exists(con, view):
+            con.execute(f"CREATE OR REPLACE TABLE {view} AS SELECT * FROM {view}")
+
     for view, label in cfg.progress_views:
         print(f"  {label:<47}: {_count_rows(con, view):,} rows")
 
