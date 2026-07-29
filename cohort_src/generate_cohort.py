@@ -64,6 +64,14 @@ def _view_exists(con: duckdb.DuckDBPyConnection, view: str) -> bool:
         return False
 
 
+def _materialize_view(con: duckdb.DuckDBPyConnection, view: str) -> None:
+    """Replace a VIEW with an in-memory TABLE of the same name."""
+    tmp = f"{view}__mat"
+    con.execute(f"CREATE TABLE {tmp} AS SELECT * FROM {view}")
+    con.execute(f"DROP VIEW IF EXISTS {view}")
+    con.execute(f"ALTER TABLE {tmp} RENAME TO {view}")
+
+
 def _write_dataframe(df: pd.DataFrame, output_dir: Path, stem: str) -> None:
     df.to_csv(output_dir / f"{stem}.csv", index=False)
     print(f"  wrote {stem}.csv")
@@ -128,7 +136,7 @@ def main(
     _execute_sql_file(con, presc_path)
     # Materialize oncology_drugs as a table so the prescriptions CSV is scanned
     # only once — every downstream view otherwise re-reads it from disk.
-    con.execute("CREATE OR REPLACE TABLE oncology_drugs AS SELECT * FROM oncology_drugs")
+    _materialize_view(con, "oncology_drugs")
     print(f"  all_cancer_patients : {_count_rows(con, 'all_cancer_patients'):,} rows")
     print(f"  oncology_drugs      : {_count_rows(con, 'oncology_drugs'):,} rows")
 
@@ -148,7 +156,7 @@ def main(
     ] + [v for v, _ in cfg.binary_table_views]
     for view in _to_materialize:
         if _view_exists(con, view):
-            con.execute(f"CREATE OR REPLACE TABLE {view} AS SELECT * FROM {view}")
+            _materialize_view(con, view)
 
     for view, label in cfg.progress_views:
         print(f"  {label:<47}: {_count_rows(con, view):,} rows")
