@@ -1,10 +1,10 @@
--- 01_drug_classification.sql
+-- 01_drug_classification.sql  (pan_cancer_ctrcd)
 --
--- Classify pharmacy records into the three target drug classes and anchor
+-- Classify pharmacy records into 10 cardiotoxic drug classes and anchor
 -- each patient to their first exposure of each class.
 --
 -- Requires:
---   oncology_drugs       (pharmacy records pre-filtered to oncology agents by run_cohort.py)
+--   oncology_drugs       (pharmacy records pre-filtered by prescriptions_pan_cancer.sql)
 --   all_cancer_patients  (cancer diagnosis anchor)
 --
 -- Main outputs:
@@ -13,18 +13,6 @@
 --   hf_patient_first_drug
 --   hf_patient_first_drug_per_class
 
--- Classify drug records into the three HF-relevant classes.
--- Records that do not match any class are NULL and are excluded downstream.
---
--- Drug name coverage notes:
---   Anthracyclines: doxorubicin (incl. liposomal Doxil/Caelyx), daunorubicin (incl. liposomal
---     DaunoXome), epirubicin, idarubicin, mitoxantrone (anthracenedione, similar mechanism).
---   HER2-targeted: IV monoclonal antibodies (trastuzumab, pertuzumab, margetuximab), ADCs
---     (ado-trastuzumab emtansine/Kadcyla, trastuzumab deruxtecan/Enhertu), and oral TKIs
---     (lapatinib, neratinib, tucatinib). Oral agents may be underrepresented in MIMIC-IV
---     inpatient pharmacy records.
---   ICIs: All approved PD-1 (pembrolizumab, nivolumab, cemiplimab), PD-L1 (atezolizumab,
---     durvalumab, avelumab), and CTLA-4 (ipilimumab, tremelimumab) inhibitors.
 CREATE OR REPLACE VIEW hf_drugs_classified AS
 SELECT
     subject_id,
@@ -64,6 +52,53 @@ SELECT
             'tremelimumab|imjudo'
         ) THEN 'immune_checkpoint_inhibitor'
 
+        WHEN regexp_matches(LOWER(drug),
+            'paclitaxel|taxol|abraxane|'
+            'docetaxel|taxotere|'
+            'cabazitaxel|jevtana'
+        ) THEN 'taxane'
+
+        WHEN regexp_matches(LOWER(drug),
+            'fluorouracil|5-fluorouracil|5fu|'
+            'capecitabine|xeloda'
+        ) THEN 'fluoropyrimidine'
+
+        WHEN regexp_matches(LOWER(drug),
+            'bevacizumab|avastin|'
+            'aflibercept|zaltrap|eylea|'
+            'ramucirumab|cyramza'
+        ) THEN 'vegf_inhibitor'
+
+        WHEN regexp_matches(LOWER(drug),
+            'cetuximab|erbitux|'
+            'panitumumab|vectibix'
+        ) THEN 'egfr_inhibitor'
+
+        WHEN regexp_matches(LOWER(drug),
+            'sunitinib|sutent|'
+            'imatinib|gleevec|glivec|'
+            'dasatinib|sprycel|'
+            'nilotinib|tasigna|'
+            'ponatinib|iclusig|'
+            'sorafenib|nexavar|'
+            'pazopanib|votrient|'
+            'cabozantinib|cabometyx|cometriq|'
+            'axitinib|inlyta|'
+            'lenvatinib|lenvima'
+        ) THEN 'tyrosine_kinase_inhibitor'
+
+        WHEN regexp_matches(LOWER(drug),
+            'bortezomib|velcade|'
+            'carfilzomib|kyprolis|'
+            'ixazomib|ninlaro'
+        ) THEN 'proteasome_inhibitor'
+
+        WHEN regexp_matches(LOWER(drug),
+            'lenalidomide|revlimid|'
+            'thalidomide|thalomid|'
+            'pomalidomide|pomalyst'
+        ) THEN 'immunomodulatory_agent'
+
         ELSE NULL
     END AS drug_class
 FROM oncology_drugs
@@ -85,7 +120,6 @@ FROM hf_cohort_drug_starts
 GROUP BY subject_id;
 
 -- Per-class anchors: first and last dose of each target class per patient
--- Used for class-specific monitoring window calculations if needed
 CREATE OR REPLACE VIEW hf_patient_first_drug_per_class AS
 SELECT
     subject_id,

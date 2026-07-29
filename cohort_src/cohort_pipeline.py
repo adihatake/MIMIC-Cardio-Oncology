@@ -214,7 +214,7 @@ PAN_CANCER_CTRCD_PIPELINE = PipelineConfig(
 
 ANTHRACYCLINE_ONLY_PIPELINE = PipelineConfig(
     name="anthracycline_only_exposure",
-    prescriptions_sql_file="prescriptions_hf_cardiotox.sql",
+    prescriptions_sql_file="prescriptions_pan_cancer.sql",
     cycle_sql_files=[
         "00_parameters.sql",
         "01_drug_classification.sql",

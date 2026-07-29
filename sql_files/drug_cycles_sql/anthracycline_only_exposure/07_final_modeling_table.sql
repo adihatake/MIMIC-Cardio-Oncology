@@ -96,7 +96,7 @@ SELECT
         SELECT 1
         FROM hf_cohort_drug_starts d
         WHERE d.subject_id = e.subject_id
-          AND d.drug_class IN ('her2_targeted', 'immune_checkpoint_inhibitor')
+          AND d.drug_class != 'anthracycline'
           AND CAST(d.starttime AS DATE) BETWEEN e.cycle_start_date AND e.cycle_end_date
     ) THEN 1 ELSE 0 END AS has_concurrent_other_class,
 
