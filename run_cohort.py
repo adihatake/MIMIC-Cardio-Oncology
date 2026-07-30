@@ -15,6 +15,11 @@ PIPELINE options  (see cohort_src/cohort_pipeline.py):
     "pan_cancer_bimodal"         — same as pan_cancer_ctrcd but acute (90d) vs moderate (365d) windows
     "hf_cardiotox"               — ICD HF endpoint only (3 drug classes, per-class windows)
     "main"                       — LVEF + CV toxicity endpoint
+
+Canonical training table convention:
+    final_cycle_binary_modeling_table.parquet is always the INCLUSIVE table
+    (retains pre-existing HF/CMP patients — largest N for prediction models).
+    The strict table is written separately for sensitivity / etiological analyses.
 """
 
 from pathlib import Path
@@ -23,8 +28,8 @@ import cohort_src.generate_cohort as cohort_module
 REPO_ROOT = Path(__file__).resolve().parent
 
 # ── configure here ────────────────────────────────────────────────────────────
-PIPELINE    = "pan_cancer_ctrcd"    # see options above
-OUTPUT_NAME = "pan_cancer_ctrcd_v1"
+PIPELINE    = "pan_cancer_bimodal"    # see options above
+OUTPUT_NAME = "pan_cancer_bimodal_v1"
 
 # Override SQL dirs only when pointing at a non-default version subdirectory
 # (e.g. "jul28_alt" instead of the canonical "hf_cardiotox" folder).

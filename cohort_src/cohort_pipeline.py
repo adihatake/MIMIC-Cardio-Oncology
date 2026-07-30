@@ -46,6 +46,9 @@ class PipelineConfig:
     # Required binary tables: [(view_name, output_file_stem), ...].
     # The FIRST entry is also written as "final_cycle_binary_modeling_table"
     # so the tokenizer can find it without knowing which pipeline was used.
+    # Convention: put INCLUSIVE first so the canonical training table retains
+    # patients with pre-existing HF/CMP (largest usable N for prediction models).
+    # Strict is written second for sensitivity / etiological analyses.
     binary_table_views: list[tuple[str, str]] = field(default_factory=list)
 
     # Optional binary tables — written only if the optional SQL succeeded.
@@ -127,8 +130,8 @@ HF_CARDIOTOX_PIPELINE = PipelineConfig(
     ],
     full_table_view="hf_final_cycle_modeling_table",
     binary_table_views=[
-        ("hf_final_binary_modeling_table_strict",    "hf_final_binary_modeling_table_strict"),
         ("hf_final_binary_modeling_table_inclusive", "hf_final_binary_modeling_table_inclusive"),
+        ("hf_final_binary_modeling_table_strict",    "hf_final_binary_modeling_table_strict"),
     ],
     optional_binary_table_views=[
         ("echo_cardiotox_binary_modeling_table_strict",    "echo_cardiotox_binary_modeling_table_strict"),
@@ -166,8 +169,8 @@ HF_CARDIOTOX_V2_PIPELINE = PipelineConfig(
     ],
     full_table_view="ctrcd_final_cycle_modeling_table",
     binary_table_views=[
-        ("ctrcd_final_binary_modeling_table_strict",    "ctrcd_final_binary_modeling_table_strict"),
         ("ctrcd_final_binary_modeling_table_inclusive", "ctrcd_final_binary_modeling_table_inclusive"),
+        ("ctrcd_final_binary_modeling_table_strict",    "ctrcd_final_binary_modeling_table_strict"),
     ],
     anchor_view="hf_patient_first_drug",
     sort_cols=["subject_id", "drug_class", "cycle_number"],
@@ -201,8 +204,8 @@ PAN_CANCER_CTRCD_PIPELINE = PipelineConfig(
     ],
     full_table_view="ctrcd_final_cycle_modeling_table",
     binary_table_views=[
-        ("ctrcd_final_binary_modeling_table_strict",    "ctrcd_final_binary_modeling_table_strict"),
         ("ctrcd_final_binary_modeling_table_inclusive", "ctrcd_final_binary_modeling_table_inclusive"),
+        ("ctrcd_final_binary_modeling_table_strict",    "ctrcd_final_binary_modeling_table_strict"),
     ],
     anchor_view="hf_patient_first_drug",
     sort_cols=["subject_id", "drug_class", "cycle_number"],
@@ -236,8 +239,8 @@ PAN_CANCER_BIMODAL_PIPELINE = PipelineConfig(
     ],
     full_table_view="ctrcd_final_cycle_modeling_table",
     binary_table_views=[
-        ("ctrcd_final_binary_modeling_table_strict",    "ctrcd_final_binary_modeling_table_strict"),
         ("ctrcd_final_binary_modeling_table_inclusive", "ctrcd_final_binary_modeling_table_inclusive"),
+        ("ctrcd_final_binary_modeling_table_strict",    "ctrcd_final_binary_modeling_table_strict"),
     ],
     anchor_view="hf_patient_first_drug",
     sort_cols=["subject_id", "drug_class", "cycle_number"],
@@ -271,8 +274,8 @@ ANTHRACYCLINE_ONLY_PIPELINE = PipelineConfig(
     ],
     full_table_view="anthracycline_final_cycle_modeling_table",
     binary_table_views=[
-        ("anthracycline_final_binary_modeling_table_strict",    "anthracycline_final_binary_modeling_table_strict"),
         ("anthracycline_final_binary_modeling_table_inclusive", "anthracycline_final_binary_modeling_table_inclusive"),
+        ("anthracycline_final_binary_modeling_table_strict",    "anthracycline_final_binary_modeling_table_strict"),
     ],
     anchor_view="anthracycline_first_patients",
     sort_cols=["subject_id", "cycle_number"],
