@@ -4,7 +4,8 @@
 -- cardiotoxicity (file 04) into a single event per patient.
 --
 -- Positive = earliest of any of:
---   (1) HF admission      — ICD-10 I50%, ICD-9 428% (file 03)
+--   (1) CV admission      — broad ICD endpoint from file 03 (MI, CMP, HF, myocarditis,
+--                           arrhythmias, cardiac arrest, pericarditis, cardiogenic shock)
 --   (2) LVEF CTRCD        — drop >=10 pp from normal baseline to <50% (file 04)
 --   (3) GLS subclinical   — >15% relative decrease from baseline GLS (file 04)
 --
@@ -57,5 +58,5 @@ SELECT
     echo.gls_relative_decrease
 
 FROM (SELECT DISTINCT subject_id FROM hf_patient_first_drug) p
-LEFT JOIN incident_hf_events          hf   ON p.subject_id = hf.subject_id
+LEFT JOIN incident_cv_events          hf   ON p.subject_id = hf.subject_id
 LEFT JOIN first_echo_cardiotox_event  echo ON p.subject_id = echo.subject_id;

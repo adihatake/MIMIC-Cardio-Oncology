@@ -61,7 +61,7 @@ _ARCH_SWEEP = dict(d_model=64, num_heads=4, num_layers=1, ff_dim=128)
 # from the death endpoint reclassification, so the dropout prior is bumped to 0.4.
 _DEFAULT_LR  = 1e-4
 _DEFAULT_WD  = 5e-2
-_DEFAULT_DO  = 0.4
+_DEFAULT_DO  = 0.3
 _DEFAULT_LS  = 0.1
 
 # ── 1. Architecture sweep ─────────────────────────────────────────────────────
