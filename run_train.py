@@ -14,7 +14,7 @@ Architecture S (safest prior for small N):
     d_model=64, num_heads=4, num_layers=1, ff_dim=128  (~940K params)
 
 Hyperparameters fixed from Jul24 sweep findings:
-    lr=1e-4, weight_decay=5e-2, dropout=0.4, label_smoothing=0.1
+    lr=1e-4, weight_decay=5e-2, dropout=0.4, label_smoothing=0.0
 
 Run:
     python run_train.py
@@ -39,21 +39,21 @@ _ARCH_S = dict(
 # ── fixed hyperparameters (from Jul24 sweep) ──────────────────────────────────
 _BASE = dict(
     **_ARCH_S,
-    epochs          = 100,
+    epochs          = 200,
     batch_size      = 16,
     lr              = 1e-4,
     weight_decay    = 5e-2,
-    dropout         = 0.4,
-    label_smoothing = 0.1,
+    dropout         = 0.3,
+    label_smoothing = 0.0,
     fusion          = "add",
     use_time        = False,
     use_age         = False,
     device          = "auto",
-    num_workers     = 2,
+    num_workers     = 4,
     use_wandb       = False,
 )
 
-SEEDS = [42, 52, 62]
+SEEDS = [42, 52, 62, 72, 82]
 
 # ── tokenization dataset variants ─────────────────────────────────────────────
 DATASETS = [
