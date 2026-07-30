@@ -63,26 +63,26 @@ Edit `OUTPUT_NAME`, `CYCLE_SQL_DIR`, and `PRESCRIPTIONS_SQL_DIR` at the top of `
 python run_cohort.py
 ```
 
-**SQL version directories** — choose the version that matches your cohort:
+**Pipeline options** — set `PIPELINE` in `run_cohort.py`:
 
-| Directory | Cohort | Description |
-|---|---|---|
-| `sql_files/drug_cycles_sql/jul17/` | `cycle_modeling_v4` | Jun 23 definitions — original cardiotoxicity labels |
-| `sql_files/drug_cycles_sql/jul24/` | `cycle_modeling_July24_v2` | Jul 24 definitions — prior cancer check, LVEF≥50 baseline, death endpoint, expanded drug list |
-
-Corresponding prescriptions SQL:
-
-| Directory | Version |
+| `PIPELINE` | Description |
 |---|---|
-| `sql_files/prescriptions_sql/jul17/` | Jul 17 |
-| `sql_files/prescriptions_sql/jul24/` | Jul 24 |
+| `"pan_cancer_ctrcd"` | 10 pan-cancer drug classes, combined CTRCD endpoint, uniform 365-day window |
+| `"pan_cancer_bimodal"` | Same as `pan_cancer_ctrcd` but acute (90d) vs moderate (365d) windows |
+| `"broad_cv"` | Same as `pan_cancer_ctrcd` but pre-existing arrhythmia also excluded from strict table |
+| `"narrow_cv"` | Same as `pan_cancer_ctrcd` but arrhythmia/conduction codes excluded from endpoint |
+| `"hf_cardiotox_v2"` | Combined CTRCD endpoint (ICD HF + LVEF + GLS), 3 drug classes, ESC 2022 windows |
+| `"anthracycline_only_exposure"` | Anthracycline-first patients only, combined CTRCD endpoint |
 
-Example `run_cohort.py` configuration for Jul 24 data:
+Each pipeline automatically resolves its SQL directories from `sql_files/drug_cycles_sql/<pipeline>/` and `sql_files/prescriptions_sql/<pipeline>/`. Override with `CYCLE_SQL_DIR` / `PRESCRIPTIONS_SQL_DIR` only when pointing at a non-default subdirectory.
+
+**Canonical table convention:** `final_cycle_binary_modeling_table.parquet` is always the **inclusive** table (retains patients with pre-existing HF/CMP — largest N for prediction models). The strict table is written separately as `ctrcd_final_binary_modeling_table_strict.parquet`.
+
+Example `run_cohort.py` configuration:
 
 ```python
-OUTPUT_NAME           = "cycle_modeling_July24_v2"
-CYCLE_SQL_DIR         = REPO_ROOT / "sql_files" / "drug_cycles_sql" / "jul24"
-PRESCRIPTIONS_SQL_DIR = REPO_ROOT / "sql_files" / "prescriptions_sql" / "jul24"
+PIPELINE    = "pan_cancer_ctrcd"
+OUTPUT_NAME = "pan_cancer_ctrcd_v3"
 ```
 
 ### CLI
@@ -90,15 +90,17 @@ PRESCRIPTIONS_SQL_DIR = REPO_ROOT / "sql_files" / "prescriptions_sql" / "jul24"
 ```bash
 python cohort_src/cohort_cli.py \
     --data-dir <DATA_DIR> \
-    --name cycle_modeling_July24_v2
+    --pipeline pan_cancer_ctrcd \
+    --name pan_cancer_ctrcd_v3
 ```
 
 | Argument | Required | Default | Description |
 |---|---|---|---|
 | `--data-dir` | yes | — | Path to the MIMIC-IV raw data directory |
+| `--pipeline` | no | `pan_cancer_ctrcd` | Pipeline name (see options above) |
 | `--name` | no | `cycle_modeling_ver2` | Output subdirectory under `cohort_outputs/` |
 
-**Cohort definition and label assignment** (`sql_files/drug_cycles_sql/<version>/`):
+**Cohort definition and label assignment** (`sql_files/drug_cycles_sql/<pipeline>/`):
 
 Each (patient, chemotherapy cycle) row receives one of four labels:
 
@@ -138,18 +140,19 @@ Edit `cohort_name` and add `TokenizationConfig` entries to `RUNS` in `run_tokeni
 python run_tokenization.py
 ```
 
-Example configuration for Jul 24 data:
+Example configuration for pan_cancer_ctrcd:
 
 ```python
 _BASE = dict(
-    cohort_name             = "cycle_modeling_July24_v2",
+    cohort_name             = "pan_cancer_ctrcd_v3",
     max_seq_len             = 512,
     insert_visit_delimiters = True,
     include_all_labs        = True,
     ...
 )
 RUNS = [
-    TokenizationConfig(**_BASE, output_name="Jul24_512_v2"),
+    TokenizationConfig(**_BASE, output_name="pan_cancer_ctrcd_v3_all_labs",     cardiac_labs_only=False),
+    TokenizationConfig(**_BASE, output_name="pan_cancer_ctrcd_v3_cardiac_labs", cardiac_labs_only=True),
 ]
 ```
 
@@ -158,8 +161,8 @@ RUNS = [
 ```bash
 python tokenization_src/tokenize_cli.py \
     --data-dir <DATA_DIR> \
-    --cohort cycle_modeling_July24_v2 \
-    --name Jul24_512_v2
+    --cohort pan_cancer_ctrcd_v3 \
+    --name pan_cancer_ctrcd_v3_all_labs
 ```
 
 Add `--summarize` to print cohort statistics and save figures in the same command.
@@ -231,17 +234,18 @@ Prints cohort statistics and saves matplotlib figures.
 Can be re-run at any time without re-tokenizing.
 
 ```bash
-python tokenization_src/summarize_tokenization.py tokenization_outputs/Jul24_512_v2
+python tokenization_src/summarize_tokenization.py tokenization_outputs/Jul30_pan_cancer_ctrcd_v3_all_labs
 ```
 
 **Figures saved** (`tokenization_outputs/<name>/summarization_figures/`):
 
 | File | Description |
 |---|---|
-| `label_distribution.png` | Positive / negative sample counts |
+| `label_distribution.png` | Positive / negative sample counts (sample- and patient-level) |
 | `sequence_length_histogram.png` | Distribution of sequence lengths with truncation line |
 | `vocabulary_breakdown.png` | Token counts by event type |
 | `age_distribution.png` | Distribution of patient age decade buckets |
+| `drug_cycles_distribution.png` | Cycle number histogram (sample-level) and max cycles per patient (patient-level) |
 
 ---
 
@@ -258,7 +262,7 @@ Both share the same `EHR_Event_Embedding` layer and the same ablation flags (`fu
 
 ```bash
 python model_src/train.py \
-    --data-dir tokenization_outputs/Jul24_512_v2 \
+    --data-dir tokenization_outputs/Jul30_pan_cancer_ctrcd_v3_all_labs \
     --output-dir experiment_outputs/run1
 ```
 
@@ -266,7 +270,7 @@ Quick debug run:
 
 ```bash
 python model_src/train.py \
-    --data-dir tokenization_outputs/Jul24_512_v2 \
+    --data-dir tokenization_outputs/Jul30_pan_cancer_ctrcd_v3_all_labs \
     --output-dir experiment_outputs/debug \
     --d-model 64 --num-heads 4 --num-layers 2 \
     --epochs 3 --batch-size 16
@@ -330,13 +334,13 @@ Post-training interpretability using three complementary techniques:
 # Explain by subject_id and cycle_number (recommended — named output folder)
 python interpretation/interpret.py \
     --model-dir experiment_outputs/run1 \
-    --data-dir  tokenization_outputs/Jul24_512_v2 \
+    --data-dir  tokenization_outputs/Jul30_pan_cancer_ctrcd_v3_all_labs \
     --subject-id 12345 --cycle-number 2
 
 # Explain by dataset row index
 python interpretation/interpret.py \
     --model-dir experiment_outputs/run1 \
-    --data-dir  tokenization_outputs/Jul24_512_v2 \
+    --data-dir  tokenization_outputs/Jul30_pan_cancer_ctrcd_v3_all_labs \
     --sample-idx 42
 
 # More accurate IG (default 100 steps; convergence delta < 0.01 is good)
@@ -459,13 +463,14 @@ Config values live directly in each runner script — edit the variables at the 
 
 ### `run_cohort.py`
 
-Set `OUTPUT_NAME`, `CYCLE_SQL_DIR`, and `PRESCRIPTIONS_SQL_DIR` at the top:
+Set `PIPELINE` and `OUTPUT_NAME` at the top:
 
 ```python
-OUTPUT_NAME           = "cycle_modeling_July24_v2"
-CYCLE_SQL_DIR         = REPO_ROOT / "sql_files" / "drug_cycles_sql" / "jul24"
-PRESCRIPTIONS_SQL_DIR = REPO_ROOT / "sql_files" / "prescriptions_sql" / "jul24"
+PIPELINE    = "pan_cancer_ctrcd"
+OUTPUT_NAME = "pan_cancer_ctrcd_v3"
 ```
+
+Override `CYCLE_SQL_DIR` / `PRESCRIPTIONS_SQL_DIR` only when pointing at a non-default SQL subdirectory.
 
 ```bash
 python run_cohort.py
@@ -476,8 +481,8 @@ python run_cohort.py
 Set `cohort_name` in `_BASE` and add `TokenizationConfig` entries to `RUNS`:
 
 ```python
-_BASE = dict(cohort_name="cycle_modeling_July24_v2", ...)
-RUNS  = [TokenizationConfig(**_BASE, output_name="Jul24_512_v2")]
+_BASE = dict(cohort_name="pan_cancer_ctrcd_v3", ...)
+RUNS  = [TokenizationConfig(**_BASE, output_name="pan_cancer_ctrcd_v3_all_labs")]
 ```
 
 ```bash
@@ -494,24 +499,23 @@ python run_pipeline.py
 
 ### `run_train.py`
 
-One-factor-at-a-time hyperparameter sweep using the A0 embedding (additive fusion, no time, no age) and architecture S for all hyperparameter axes. All runs write to `experiment_outputs/Jul24/`.
+Dataset sweep across all four `pan_cancer_ctrcd_v3` tokenization variants using architecture S (small model). Hyperparameters are fixed from the Jul24 sweep findings.
 
 Each `seed` independently controls:
 - **Patient split** — which patients go to train / val / test (70 / 15 / 15)
 - **Model initialisation** — weight init and dropout randomness
 
-**Sweep structure** (5 seeds each):
+**Sweep structure** (3 seeds each):
 
-| Sweep | Variants | Fixed | Runs |
-|---|---|---|---|
-| `arch_sweep/` | S / M / L | default lr/wd/dropout/ls | 15 |
-| `lr_sweep/` | LR1–LR5 (5e-5 → 1e-3) | arch S, default wd/dropout/ls | 25 |
-| `wd_sweep/` | WD1–WD5 (1e-2 → 4e-1) | arch S, default lr/dropout/ls | 25 |
-| `dropout_sweep/` | D1–D5 (0.2 → 0.6) | arch S, default lr/wd/ls | 25 |
-| `ls_sweep/` | LS1–LS5 (0.05 → 0.25) | arch S, default lr/wd/dropout | 25 |
-| **Total** | | | **115** |
+| Dataset variant | Tokenization dir | Runs |
+|---|---|---|
+| `all_labs` | `Jul30_pan_cancer_ctrcd_v3_all_labs` | 3 |
+| `cardiac_labs` | `Jul30_pan_cancer_ctrcd_v3_cardiac_labs` | 3 |
+| `bucketed_all_labs` | `Jul30_pan_cancer_ctrcd_v3_bucketed_all_labs` | 3 |
+| `bucketed_cardiac_labs` | `Jul30_pan_cancer_ctrcd_v3_bucketed_cardiac_labs` | 3 |
+| **Total** | | **12** |
 
-Architecture S (`d_model=64, num_heads=4, num_layers=1, ff_dim=128`) is fixed for all hyperparameter sweeps.
+Architecture S: `d_model=64, num_heads=4, num_layers=1, ff_dim=128`. Fixed hyperparameters: `lr=1e-4, weight_decay=5e-2, dropout=0.4, label_smoothing=0.1`. Outputs write to `experiment_outputs/pan_cancer_ctrcd/small_model/`.
 
 ```bash
 python run_train.py
@@ -527,7 +531,7 @@ python run_comparisons.py --sweep arch lr   # specific sweeps only
 python run_comparisons.py --show            # display instead of saving
 ```
 
-Figures are saved to `experiment_outputs/Jul24/comparisons/`.
+Figures are saved to `experiment_outputs/pan_cancer_ctrcd/comparisons/`.
 
 ### `run_mamba.py`
 
@@ -556,7 +560,7 @@ python run_interpretation.py
 ```python
 _BASE = dict(
     model_dir     = REPO_ROOT / "experiment_outputs" / "run1",
-    data_dir      = REPO_ROOT / "tokenization_outputs" / "Jul24_512_v2",
+    data_dir      = REPO_ROOT / "tokenization_outputs" / "Jul30_pan_cancer_ctrcd_v3_all_labs",
     ig_steps      = 100,
     top_k         = 30,
     skip_ig       = False,
@@ -647,15 +651,15 @@ Reports: AUROC, AUPRC, F1, sensitivity, specificity, accuracy, precision, confus
 Scans an experiment directory for test metrics files, groups by ablation ID, and reports mean ± std across seeds for all metrics with a bar chart.
 
 ```bash
-python evaluation/compare_ablations.py experiment_outputs/Jul24/lr_sweep/
-python evaluation/compare_ablations.py experiment_outputs/Jul24/lr_sweep/ --sort auprc --metric auprc
+python evaluation/compare_ablations.py experiment_outputs/pan_cancer_ctrcd/small_model/
+python evaluation/compare_ablations.py experiment_outputs/pan_cancer_ctrcd/small_model/ --sort auprc --metric auprc
 ```
 
 Expected layout:
 ```
-experiment_outputs/Jul24/lr_sweep/
-  LR1/seed42/test_metrics.json
-  LR1/seed52/test_metrics.json
+experiment_outputs/pan_cancer_ctrcd/small_model/
+  all_labs/seed42/test_metrics.json
+  all_labs/seed52/test_metrics.json
   ...
 ```
 
@@ -665,13 +669,12 @@ Plots training loss and per-metric validation curves from `history.json`. Pass a
 
 ```bash
 python evaluation/plot_history.py \
-    --model-dir experiment_outputs/Jul24/arch_sweep/M
+    --model-dir experiment_outputs/pan_cancer_ctrcd/small_model/all_labs
 
 python evaluation/plot_history.py \
-    --model-dir experiment_outputs/Jul24/arch_sweep/S \
-                experiment_outputs/Jul24/arch_sweep/M \
-                experiment_outputs/Jul24/arch_sweep/L \
-    --save arch_sweep.png
+    --model-dir experiment_outputs/pan_cancer_ctrcd/small_model/all_labs \
+                experiment_outputs/pan_cancer_ctrcd/small_model/cardiac_labs \
+    --save dataset_sweep.png
 ```
 
 | Argument | Default | Description |
@@ -689,7 +692,7 @@ python evaluation/plot_history.py \
 python model_src/embedding_layers.py        # embedding layer
 python model_src/ehr_encoder.py             # transformer architecture + return_attention
 python model_src/ehr_mamba.py               # Mamba architecture (requires CUDA + mamba-ssm)
-python model_src/dataset.py tokenization_outputs/Jul24_512_v2   # DataLoader
+python model_src/dataset.py tokenization_outputs/Jul30_pan_cancer_ctrcd_v3_all_labs   # DataLoader
 ```
 
 ---
@@ -741,7 +744,8 @@ MIMIC-Cardio-Oncology/
 ├── run_cohort.py                          Runner: cohort generation (set SQL version at top)
 ├── run_tokenization.py                    Runner: tokenization variants
 ├── run_pipeline.py                        Runner: cohort + tokenization in one go
-├── run_train.py                           Runner: 5-axis hyperparameter sweep (115 runs)
+├── run_train.py                           Runner: pan_cancer_ctrcd dataset sweep, small model (12 runs)
+├── run_train_small.py                     Runner: earlier small-model sweep (v1 datasets, reference)
 ├── run_comparisons.py                     Runner: generate all sweep comparison plots
 ├── run_mamba.py                           Runner: Mamba training
 ├── run_xgboost.py                         Runner: XGBoost baseline
@@ -755,9 +759,9 @@ MIMIC-Cardio-Oncology/
 **Via runner scripts** (edit variables at the top of each file first):
 
 ```bash
-python run_cohort.py        # builds cohort_outputs/cycle_modeling_July24_v2/
-python run_tokenization.py  # builds tokenization_outputs/Jul24_512_v2/
-python run_train.py         # runs 115-run sweep → experiment_outputs/Jul24/
+python run_cohort.py        # builds cohort_outputs/pan_cancer_ctrcd_v3/
+python run_tokenization.py  # builds tokenization_outputs/pan_cancer_ctrcd_v3_*/
+python run_train.py         # runs 12-run dataset sweep → experiment_outputs/pan_cancer_ctrcd/
 python run_interpretation.py
 ```
 
@@ -770,14 +774,17 @@ python run_pipeline.py
 **Via CLI:**
 
 ```bash
-# 1. Build cohort (Jul 24 SQL)
-python cohort_src/cohort_cli.py --data-dir <DATA_DIR> --name cycle_modeling_July24_v2
+# 1. Build cohort
+python cohort_src/cohort_cli.py \
+    --data-dir <DATA_DIR> \
+    --pipeline pan_cancer_ctrcd \
+    --name pan_cancer_ctrcd_v3
 
 # 2. Tokenize
 python tokenization_src/tokenize_cli.py \
     --data-dir <DATA_DIR> \
-    --cohort cycle_modeling_July24_v2 \
-    --name Jul24_512_v2 \
+    --cohort pan_cancer_ctrcd_v3 \
+    --name pan_cancer_ctrcd_v3_all_labs \
     --max-seq-len 512 \
     --insert-visit-delimiters \
     --include-all-labs \
@@ -785,7 +792,7 @@ python tokenization_src/tokenize_cli.py \
 
 # 3. Train
 python model_src/train.py \
-    --data-dir tokenization_outputs/Jul24_512_v2 \
+    --data-dir tokenization_outputs/Jul30_pan_cancer_ctrcd_v3_all_labs \
     --output-dir experiment_outputs/run1 \
     --seed 42
 
@@ -795,28 +802,22 @@ python evaluation/evaluate_model.py --model-dir experiment_outputs/run1
 # 5. Interpret
 python interpretation/interpret.py \
     --model-dir experiment_outputs/run1 \
-    --data-dir tokenization_outputs/Jul24_512_v2 \
+    --data-dir tokenization_outputs/Jul30_pan_cancer_ctrcd_v3_all_labs \
     --subject-id 10006008 --cycle-number 1
 ```
 
-### Hyperparameter sweep (115 runs)
+### Dataset sweep (12 runs)
 
 ```bash
-# Run all 5 sweeps (115 runs total):
+# Run all 4 dataset variants × 3 seeds:
 python run_train.py
 
-# Generate all comparison plots after training:
-python run_comparisons.py
-
-# Specific sweep only:
-python run_comparisons.py --sweep lr
-
 # Compare test metrics across variants:
-python evaluation/compare_ablations.py experiment_outputs/Jul24/lr_sweep/ --sort auroc --metric auroc
+python evaluation/compare_ablations.py experiment_outputs/pan_cancer_ctrcd/small_model/ --sort auroc --metric auroc
 ```
 
-### Adding a new SQL version
+### Adding a new pipeline
 
-1. Create `sql_files/drug_cycles_sql/<date>/` and `sql_files/prescriptions_sql/<date>/` with the new SQL files.
-2. Set the new paths in `run_cohort.py` and choose a new `OUTPUT_NAME`.
-3. Run `python run_cohort.py`, then `python run_tokenization.py`.
+1. Define a `PipelineConfig` in `cohort_src/cohort_pipeline.py` and register it in `PIPELINE_REGISTRY`.
+2. Create `sql_files/drug_cycles_sql/<pipeline>/` and `sql_files/prescriptions_sql/<pipeline>/` with the new SQL files.
+3. Set `PIPELINE` and `OUTPUT_NAME` in `run_cohort.py`, then run `python run_cohort.py` and `python run_tokenization.py`.

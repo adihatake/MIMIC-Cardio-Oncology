@@ -32,17 +32,17 @@ _BASE = dict(
 )
 
 RUNS = [
-    TokenizationConfig(**_BASE, output_name="pan_cancer_ctrcd_v3_all_labs",     cardiac_labs_only=False),
-    TokenizationConfig(**_BASE, output_name="pan_cancer_ctrcd_v3_cardiac_labs", cardiac_labs_only=True),
+    # TokenizationConfig(**_BASE, output_name="pan_cancer_ctrcd_v3_all_labs",     cardiac_labs_only=False),
+    # TokenizationConfig(**_BASE, output_name="pan_cancer_ctrcd_v3_cardiac_labs", cardiac_labs_only=True),
 
-    # TokenizationConfig(**_BASE, output_name="pan_cancer_ctrcd_v1_bucketed_all_labs",
-    #                    bucket_labs=True,
-    #                    bucket_medications=True,
-    #                    cardiac_labs_only=False),
-    # TokenizationConfig(**_BASE, output_name="pan_cancer_ctrcd_v1_bucketed_cardiac_labs",
-    #                    bucket_labs=True,
-    #                    bucket_medications=True,
-    #                    cardiac_labs_only=True),
+    TokenizationConfig(**_BASE, output_name="pan_cancer_ctrcd_v3_bucketed_all_labs",
+                       bucket_labs=True,
+                       bucket_medications=True,
+                       cardiac_labs_only=False),
+    TokenizationConfig(**_BASE, output_name="pan_cancer_ctrcd_v3_bucketed_cardiac_labs",
+                       bucket_labs=True,
+                       bucket_medications=True,
+                       cardiac_labs_only=True),
 ]
 # ─────────────────────────────────────────────────────────────────────────────
 
