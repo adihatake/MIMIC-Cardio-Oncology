@@ -19,6 +19,7 @@ Figures saved (PNG):
     sequence_length_histogram.png
     vocabulary_breakdown.png
     age_distribution.png
+    drug_cycles_distribution.png
     split_summary.png  (only if splits_summary.csv exists)
 """
 
@@ -127,6 +128,46 @@ def _save_age_distribution(age_ids: torch.Tensor, out_dir: Path) -> None:
     fig.savefig(out_dir / "age_distribution.png", dpi=150)
     plt.close(fig)
     print(f"  Saved: {out_dir / 'age_distribution.png'}")
+
+
+def _save_drug_cycles_distribution(samples: pd.DataFrame, out_dir: Path) -> None:
+    """2-panel: cycle-number histogram (sample level) + total cycles per patient (patient level)."""
+    cpp = samples.groupby("subject_id")["cycle_number"].max()
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+    fig.suptitle("Drug Cycle Distributions", fontsize=14, fontweight="bold")
+
+    ax = axes[0]
+    cnum = samples["cycle_number"].values
+    bins = np.arange(cnum.min() - 0.5, cnum.max() + 1.5, 1)
+    ax.hist(cnum, bins=bins, color="#4c72b0", edgecolor="white", linewidth=0.4)
+    ax.axvline(float(np.mean(cnum)), color="#c44e52", linestyle="--", linewidth=1.4,
+               label=f"mean = {np.mean(cnum):.1f}")
+    ax.axvline(float(np.median(cnum)), color="#55a868", linestyle="--", linewidth=1.4,
+               label=f"median = {np.median(cnum):.0f}")
+    ax.set_xlabel("Cycle number")
+    ax.set_ylabel("Number of samples")
+    ax.set_title("Cycle Number — Sample Level")
+    ax.legend(fontsize=8)
+
+    ax = axes[1]
+    cpp_vals = cpp.values
+    bins = np.arange(cpp_vals.min() - 0.5, cpp_vals.max() + 1.5, 1)
+    ax.hist(cpp_vals, bins=bins, color="#dd8452", edgecolor="white", linewidth=0.4)
+    ax.axvline(float(np.mean(cpp_vals)), color="#c44e52", linestyle="--", linewidth=1.4,
+               label=f"mean = {np.mean(cpp_vals):.1f}")
+    ax.axvline(float(np.median(cpp_vals)), color="#55a868", linestyle="--", linewidth=1.4,
+               label=f"median = {np.median(cpp_vals):.0f}")
+    ax.set_xlabel("Total drug cycles")
+    ax.set_ylabel("Number of patients")
+    ax.set_title("Drug Cycles per Patient — Patient Level")
+    ax.legend(fontsize=8)
+
+    fig.tight_layout()
+    path = out_dir / "drug_cycles_distribution.png"
+    fig.savefig(path, dpi=150)
+    plt.close(fig)
+    print(f"  Saved: {path}")
 
 
 def _save_split_summary(split_df: pd.DataFrame, out_dir: Path) -> None:
@@ -281,6 +322,7 @@ def main(input_dir: Path = DEFAULT_DIR) -> None:
     _save_seq_len_histogram(seq_lens, max_seq_len, figures_dir)
     _save_vocabulary_breakdown(vocab, concept_ids, figures_dir)
     _save_age_distribution(age_ids, figures_dir)
+    _save_drug_cycles_distribution(samples, figures_dir)
     if splits_path.exists():
         _save_split_summary(split_df, figures_dir)
 
