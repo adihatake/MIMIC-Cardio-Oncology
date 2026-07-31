@@ -47,6 +47,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from model_src.dataset import get_dataloaders
 from model_src.ehr_encoder import EHR_Encoder
+from model_src.ehr_lstm import EHR_LSTM
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -170,19 +171,34 @@ def train(args: argparse.Namespace | object) -> None:
     )
     print(f"Train batches: {len(train_dl)}  |  Val batches: {len(val_dl)}  |  Test batches: {len(test_dl)}")
 
-    model = EHR_Encoder(
+    model_type = getattr(args, "model_type", "transformer")
+    _shared = dict(
         num_concepts=num_concepts,
         max_num_visits=max_num_visits,
         d_model=args.d_model,
-        num_heads=args.num_heads,
         num_layers=args.num_layers,
-        ff_dim=args.ff_dim,
         dropout=args.dropout,
         max_seq_len=max_seq_len,
         fusion=getattr(args, "fusion", "add"),
         use_time=getattr(args, "use_time", False),
         use_age=getattr(args, "use_age", False),
-    ).to(device)
+    )
+    if model_type == "transformer":
+        model = EHR_Encoder(
+            **_shared,
+            num_heads=args.num_heads,
+            ff_dim=args.ff_dim,
+        ).to(device)
+    elif model_type in ("lstm", "gru"):
+        model = EHR_LSTM(
+            **_shared,
+            rnn_type=model_type,
+            bidirectional=getattr(args, "bidirectional", True),
+        ).to(device)
+    else:
+        raise ValueError(
+            f"Unknown model_type '{model_type}'. Choose 'transformer', 'lstm', or 'gru'."
+        )
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameters   : {n_params:,}")
@@ -353,6 +369,9 @@ def parse_args() -> argparse.Namespace:
                    help="Path to tokenization_outputs/<name>/")
     p.add_argument("--output-dir",   default="model_outputs/run1",
                    help="Where to save checkpoints and logs.")
+    p.add_argument("--model-type",   default="transformer",
+                   choices=["transformer", "lstm", "gru"], dest="model_type",
+                   help="Model architecture to train.")
     p.add_argument("--epochs",       type=int,   default=20)
     p.add_argument("--batch-size",   type=int,   default=32)
     p.add_argument("--lr",           type=float, default=1e-4)

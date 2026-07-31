@@ -21,6 +21,8 @@ class TrainConfig:
     # ── model selection ───────────────────────────────────────────────────────
     # "transformer" → EHR_Encoder   (BERT-style, O(L²) attention)
     # "mamba"       → EHR_Mamba     (bidirectional SSM, O(L) recurrence)
+    # "lstm"        → EHR_LSTM      (bidirectional LSTM, mean pooling)
+    # "gru"         → EHR_LSTM      (bidirectional GRU, mean pooling)
     model_type: str = "transformer"
 
     # ── transformer architecture ──────────────────────────────────────────────
