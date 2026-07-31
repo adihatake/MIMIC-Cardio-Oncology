@@ -105,13 +105,13 @@ def plot_comparison(
     Two vertically stacked panels showing the same top-K tokens (ranked by IG),
     coloured by event type.  Top panel = IG attribution, bottom panel = rollout.
 
-    If no ig_score column is present (IG was skipped), only the rollout panel
+    If no ig_score_l2 column is present (IG was skipped), only the rollout panel
     is drawn.
     """
-    has_ig = "ig_score" in df.columns and df["ig_score"].notna().any()
+    has_ig = "ig_score_l2" in df.columns and df["ig_score_l2"].notna().any()
 
     # Rank by IG score if available, else by rollout
-    rank_col = "ig_score" if has_ig else "rollout_score"
+    rank_col = "ig_score_l2" if has_ig else "rollout_score"
     top = df.nlargest(top_k, rank_col).reset_index(drop=True)
 
     colors = [EVENT_TYPE_COLORS.get(_event_type(r), "#999999") for r in top["token"]]
@@ -131,7 +131,7 @@ def plot_comparison(
 
     if has_ig:
         ax = axes[panel_idx]
-        ax.bar(x, top["ig_score"], color=colors, edgecolor="white", linewidth=0.4)
+        ax.bar(x, top["ig_score_l2"], color=colors, edgecolor="white", linewidth=0.4)
         ax.set_ylabel("IG attribution\n(L2 norm over d_model)", fontsize=9)
         ax.set_title(
             (f"{title_prefix}  —  " if title_prefix else "") + f"Top {top_k} tokens by IG score",
@@ -170,12 +170,12 @@ def plot_event_type_breakdown(
     Horizontal grouped bar chart: total IG and rollout attribution per event type.
     Helps answer "does the model rely more on labs than diagnoses?"
     """
-    has_ig = "ig_score" in df.columns and df["ig_score"].notna().any()
+    has_ig = "ig_score_l2" in df.columns and df["ig_score_l2"].notna().any()
 
     df = df.copy()
     df["event_type"] = df["token"].apply(_event_type)
 
-    score_cols = ["rollout_score"] + (["ig_score"] if has_ig else [])
+    score_cols = ["rollout_score"] + (["ig_score_l2"] if has_ig else [])
     breakdown = (
         df.groupby("event_type")[score_cols]
         .sum()
@@ -203,7 +203,7 @@ def plot_event_type_breakdown(
     if has_ig:
         ax.barh(
             y + bar_h / 2,
-            breakdown["ig_score"],
+            breakdown["ig_score_l2"],
             height=bar_h,
             color=[EVENT_TYPE_COLORS.get(t, "#999999") for t in breakdown.index],
             alpha=1.0,
@@ -241,7 +241,7 @@ def plot_scatter(
     Divergences reveal where attention and gradient-based attribution disagree.
     Not produced if IG scores are missing.
     """
-    if "ig_score" not in df.columns or not df["ig_score"].notna().any():
+    if "ig_score_l2" not in df.columns or not df["ig_score_l2"].notna().any():
         return
 
     df = df.copy()
@@ -253,7 +253,7 @@ def plot_scatter(
         color = EVENT_TYPE_COLORS.get(etype, "#999999")
         ax.scatter(
             group["rollout_score"],
-            group["ig_score"],
+            group["ig_score_l2"],
             c=color,
             alpha=0.6,
             s=25,
@@ -262,11 +262,11 @@ def plot_scatter(
         )
 
     # Annotate the top-5 tokens by IG score
-    top5 = df.nlargest(5, "ig_score")
+    top5 = df.nlargest(5, "ig_score_l2")
     for _, row in top5.iterrows():
         ax.annotate(
             row["label"],
-            xy=(row["rollout_score"], row["ig_score"]),
+            xy=(row["rollout_score"], row["ig_score_l2"]),
             xytext=(4, 4),
             textcoords="offset points",
             fontsize=6.5,
@@ -274,7 +274,7 @@ def plot_scatter(
         )
 
     ax.set_xlabel("Rollout relevance score", fontsize=9)
-    ax.set_ylabel("IG attribution (L2 norm)", fontsize=9)
+    ax.set_ylabel("IG attribution (L2 norm over d_model)", fontsize=9)
     ax.set_title(
         (f"{title_prefix}  —  " if title_prefix else "") + "Rollout vs Integrated Gradients",
         fontsize=11,
@@ -297,7 +297,7 @@ def visualize(
 ) -> None:
     """
     Load attributions.csv and write all three plots to output_dir.
-    Safe to call even if ig_score column is absent (IG was skipped).
+    Safe to call even if ig_score_l2 column is absent (IG was skipped).
     """
     csv_path   = Path(csv_path)
     output_dir = Path(output_dir)

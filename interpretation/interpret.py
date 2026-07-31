@@ -37,10 +37,18 @@ Usage
 
 Outputs  (written to --output-dir)
 --------------------------------------
-  attention_L{i}_H{j}.png   attention heatmap per (layer, head)
-  attention_rollout.png      rollout relevance bar chart (top-k tokens)
-  integrated_gradients.png   IG attribution bar chart  (top-k tokens)
-  attributions.csv           per-token scores for rollout + IG, sorted by IG score
+  attention_L{i}_H{j}.png              attention heatmap per (layer, head); token labels
+                                       include [V{n}] visit suffix so repeated features
+                                       (same lab at different visits) are distinguishable
+  attention_rollout.png                rollout relevance bar chart (top-k tokens, CLS excluded)
+  integrated_gradients.png             signed IG bar chart — red = pro-toxic, blue = protective
+                                       sorted by absolute value; CLS excluded
+  integrated_gradients_magnitude.png   unsigned L2-norm IG bar chart (reference)
+  attributions.csv                     per-token rollout + IG scores (signed + L2), sorted by L2
+  feature_importance.csv               per-feature-type aggregation: mean/std IG, count,
+                                       mean visit, mean days before prediction
+  feature_importance.png               top-k features by mean |signed IG| with ±1 std error bars
+                                       and per-bar annotation of occurrence count + mean timing
 """
 
 from __future__ import annotations
@@ -217,12 +225,35 @@ def _event_type(raw_token: str) -> str:
 
 
 def _decode_tokens(
-    concept_ids_1d: torch.Tensor, inv_vocab: dict[int, str]
+    concept_ids_1d: torch.Tensor,
+    inv_vocab: dict[int, str],
+    visit_ids_1d: torch.Tensor | None = None,
 ) -> tuple[list[str], list[str]]:
-    """Return (raw_tokens, human_labels) for every position."""
+    """Return (raw_tokens, human_labels) for every position.
+
+    If visit_ids_1d is provided, each label gets a [V{n}] suffix so repeated
+    features (e.g. the same lab drawn at multiple visits) are distinguishable
+    in heatmaps.
+    """
     raw    = [inv_vocab.get(int(cid), f"[{int(cid)}]") for cid in concept_ids_1d]
     labels = [_human_label(r) for r in raw]
+    if visit_ids_1d is not None:
+        visits = visit_ids_1d.tolist()
+        labels = [f"{lbl} [V{v}]" for lbl, v in zip(labels, visits)]
     return raw, labels
+
+
+def _prediction_days(prediction_time_str: str) -> int:
+    """Convert prediction_time string to integer days since 2000-01-01."""
+    from datetime import date, datetime
+    origin = date(2000, 1, 1)
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            d = datetime.strptime(prediction_time_str, fmt).date()
+            return (d - origin).days
+        except ValueError:
+            continue
+    raise ValueError(f"Cannot parse prediction_time: {prediction_time_str}")
 
 
 # ── Attention rollout ─────────────────────────────────────────────────────────
@@ -281,7 +312,7 @@ def compute_integrated_gradients(
     batch: dict[str, torch.Tensor],
     target_class: int = 1,
     n_steps: int = 100,
-) -> tuple[torch.Tensor, float]:
+) -> tuple[torch.Tensor, torch.Tensor, float]:
     """
     Compute Integrated Gradients for each token position.
 
@@ -290,7 +321,8 @@ def compute_integrated_gradients(
     the learned PAD-token embedding.
 
     Returns
-        token_attr         (seq_len,) L2-norm of per-token attribution vector
+        token_attr_l2      (seq_len,) L2-norm of per-token attribution (unsigned magnitude)
+        token_attr_signed  (seq_len,) sum over d_model (signed: + = pro-toxic, - = protective)
         convergence_delta  |Σ attr - (f(x) - f(baseline))|  (lower is better)
     """
     try:
@@ -330,9 +362,10 @@ def compute_integrated_gradients(
         n_steps                 = n_steps,
         return_convergence_delta= True,
     )
-    # (1, seq_len, d_model) → scalar per token via L2 norm over d_model
-    token_attr = attributions[0].detach().norm(dim=-1)   # (seq_len,)
-    return token_attr, float(delta.abs().item())
+    attr = attributions[0].detach()                # (seq_len, d_model)
+    token_attr_l2     = attr.norm(dim=-1)          # unsigned magnitude
+    token_attr_signed = attr.sum(dim=-1)           # signed: + pushes toward target class
+    return token_attr_l2, token_attr_signed, float(delta.abs().item())
 
 
 # ── Visualization ─────────────────────────────────────────────────────────────
@@ -419,6 +452,192 @@ def plot_token_bar(
     plt.close(fig)
 
 
+def plot_signed_ig_bar(
+    scores: torch.Tensor,
+    token_labels: list[str],
+    raw_tokens: list[str],
+    title: str,
+    output_path: Path,
+    top_k: int = 30,
+    convergence_delta: float | None = None,
+) -> None:
+    """
+    Bar chart of signed IG scores sorted by absolute value, coloured by direction.
+
+    Positive (red)  → token pushes prediction toward the positive (cardiotoxic) class.
+    Negative (blue) → token is protective / pushes prediction away from cardiotoxicity.
+
+    CLS is excluded — its attribution is trivially high and uninformative.
+    """
+    scores_np = scores.cpu().float().numpy()
+    order     = np.argsort(np.abs(scores_np))[::-1][:top_k]
+
+    top_scores = scores_np[order]
+    top_labels = [token_labels[i] for i in order]
+    top_raw    = [raw_tokens[i]   for i in order]
+    colors     = ["#c0392b" if s >= 0 else "#2980b9" for s in top_scores]
+
+    fig, ax = plt.subplots(figsize=(max(10, top_k * 0.45), 5))
+    ax.bar(range(len(top_scores)), top_scores, color=colors,
+           edgecolor="white", linewidth=0.4)
+    ax.axhline(0, color="black", linewidth=0.6, alpha=0.5)
+    ax.set_xticks(range(len(top_scores)))
+    ax.set_xticklabels(top_labels, rotation=55, ha="right", fontsize=7)
+    ax.set_ylabel("Signed IG attribution (sum over d_model)", fontsize=9)
+    ax.set_title(title, fontsize=11)
+
+    import matplotlib.patches as mpatches
+    legend_handles = [
+        mpatches.Patch(color="#c0392b", label="pro-toxic  (+)"),
+        mpatches.Patch(color="#2980b9", label="protective (−)"),
+    ]
+    ax.legend(handles=legend_handles, fontsize=8, loc="upper right")
+
+    if convergence_delta is not None:
+        ax.text(
+            0.01, 0.97, f"convergence Δ = {convergence_delta:.5f}",
+            transform=ax.transAxes, fontsize=7, va="top", color="gray",
+        )
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+# ── Feature aggregation ───────────────────────────────────────────────────────
+
+def build_feature_aggregation(
+    raw_tokens:      list[str],
+    token_labels:    list[str],
+    rollout_scores:  torch.Tensor,
+    visit_ids:       torch.Tensor,
+    days_before:     torch.Tensor,
+    ig_l2:           torch.Tensor | None = None,
+    ig_signed:       torch.Tensor | None = None,
+) -> pd.DataFrame:
+    """
+    Group all token occurrences by their base type (raw_token) and summarise
+    attribution scores + temporal location across occurrences.
+
+    Columns
+    -------
+    token           raw concept string (base type, no visit suffix)
+    label           human-readable name
+    event_type      diagnosis / lab / medication / procedure / special
+    count           number of occurrences in this sequence
+    mean_rollout    mean rollout relevance across occurrences
+    mean_ig_l2      mean unsigned IG magnitude  (None if IG was skipped)
+    mean_ig_signed  mean signed IG              (None if IG was skipped)
+    std_ig_signed   std of signed IG across occurrences
+    mean_visit      mean visit number
+    mean_days_before mean days before prediction (negative = before prediction)
+    earliest_days   earliest (most negative) occurrence
+    latest_days     latest occurrence
+    """
+    rows = []
+    n = len(raw_tokens)
+    roll_np   = rollout_scores.cpu().float().numpy()
+    vis_np    = visit_ids.cpu().numpy()
+    days_np   = days_before.cpu().float().numpy()
+    ig_l2_np  = ig_l2.cpu().float().numpy()     if ig_l2     is not None else None
+    ig_sig_np = ig_signed.cpu().float().numpy() if ig_signed is not None else None
+
+    for i in range(n):
+        rows.append({
+            "token":      raw_tokens[i],
+            "label":      _human_label(raw_tokens[i]),
+            "event_type": _event_type(raw_tokens[i]),
+            "rollout":    float(roll_np[i]),
+            "ig_l2":      float(ig_l2_np[i])  if ig_l2_np  is not None else None,
+            "ig_signed":  float(ig_sig_np[i]) if ig_sig_np is not None else None,
+            "visit":      int(vis_np[i]),
+            "days_before": float(days_np[i]),
+        })
+
+    df = pd.DataFrame(rows)
+    agg: dict[str, object] = {
+        "label":        ("label",       "first"),
+        "event_type":   ("event_type",  "first"),
+        "count":        ("rollout",     "count"),
+        "mean_rollout": ("rollout",     "mean"),
+    }
+    if ig_l2_np is not None:
+        agg["mean_ig_l2"]     = ("ig_l2",     "mean")
+        agg["mean_ig_signed"] = ("ig_signed",  "mean")
+        agg["std_ig_signed"]  = ("ig_signed",  "std")
+    agg["mean_visit"]       = ("visit",      "mean")
+    agg["mean_days_before"] = ("days_before", "mean")
+    agg["earliest_days"]    = ("days_before", "min")
+    agg["latest_days"]      = ("days_before", "max")
+
+    result = df.groupby("token").agg(**{k: v for k, v in agg.items()}).reset_index()
+    sort_col = "mean_ig_l2" if ig_l2_np is not None else "mean_rollout"
+    return result.sort_values(sort_col, ascending=False).reset_index(drop=True)
+
+
+def plot_feature_importance(
+    feat_df:    pd.DataFrame,
+    output_path: Path,
+    title:      str,
+    top_k:      int = 30,
+) -> None:
+    """
+    Bar chart of top-k features by mean |signed IG|, coloured by direction.
+    Error bars show ±1 std across occurrences. Annotation shows mean visit and
+    mean days before prediction.
+    """
+    if "mean_ig_signed" not in feat_df.columns:
+        return  # IG was skipped
+
+    df = feat_df.copy()
+    df["abs_mean_ig"] = df["mean_ig_signed"].abs()
+    df = df.nlargest(top_k, "abs_mean_ig").reset_index(drop=True)
+
+    colors = ["#c0392b" if v >= 0 else "#2980b9" for v in df["mean_ig_signed"]]
+    errs   = df["std_ig_signed"].fillna(0).tolist()
+
+    fig, ax = plt.subplots(figsize=(max(10, top_k * 0.5), 6))
+    bars = ax.bar(
+        range(len(df)),
+        df["mean_ig_signed"],
+        color=colors,
+        edgecolor="white",
+        linewidth=0.4,
+        yerr=errs,
+        capsize=3,
+        error_kw={"elinewidth": 0.8, "ecolor": "gray"},
+    )
+    ax.axhline(0, color="black", linewidth=0.6, alpha=0.5)
+
+    # Annotate each bar with count and mean days before prediction
+    for i, (_, row) in enumerate(df.iterrows()):
+        yval  = float(row["mean_ig_signed"])
+        count = int(row["count"])
+        days  = float(row["mean_days_before"])
+        va    = "bottom" if yval >= 0 else "top"
+        offset = ax.get_ylim()[1] * 0.02 if yval >= 0 else ax.get_ylim()[0] * 0.02
+        ax.text(
+            i, yval + (abs(offset) if yval >= 0 else -abs(offset)),
+            f"n={count}\n{days:.0f}d",
+            ha="center", va=va, fontsize=5.5, color="#444444",
+        )
+
+    ax.set_xticks(range(len(df)))
+    ax.set_xticklabels(df["label"], rotation=55, ha="right", fontsize=7)
+    ax.set_ylabel("Mean signed IG attribution (±1 std)", fontsize=9)
+    ax.set_title(title, fontsize=11)
+
+    import matplotlib.patches as mpatches
+    ax.legend(handles=[
+        mpatches.Patch(color="#c0392b", label="pro-toxic  (+)"),
+        mpatches.Patch(color="#2980b9", label="protective (−)"),
+    ], fontsize=8, loc="upper right")
+
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
 # ── CSV export ─────────────────────────────────────────────────────────────────
 
 def save_attributions_csv(
@@ -426,19 +645,21 @@ def save_attributions_csv(
     token_labels: list[str],
     raw_tokens: list[str],
     rollout_scores: torch.Tensor,
-    ig_scores: torch.Tensor | None,
+    ig_scores_l2: torch.Tensor | None,
+    ig_scores_signed: torch.Tensor | None,
 ) -> None:
     rows = []
     for i, (label, raw, roll) in enumerate(
         zip(token_labels, raw_tokens, rollout_scores.cpu().tolist())
     ):
         row: dict = {"position": i, "token": raw, "label": label, "rollout_score": roll}
-        if ig_scores is not None:
-            row["ig_score"] = float(ig_scores[i].item())
+        if ig_scores_l2 is not None:
+            row["ig_score_l2"]     = float(ig_scores_l2[i].item())
+            row["ig_score_signed"] = float(ig_scores_signed[i].item())
         rows.append(row)
 
     df = pd.DataFrame(rows)
-    sort_col = "ig_score" if ig_scores is not None else "rollout_score"
+    sort_col = "ig_score_l2" if ig_scores_l2 is not None else "rollout_score"
     df = df.sort_values(sort_col, ascending=False)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -517,10 +738,30 @@ def explain(
     prob_pos = float(F.softmax(logits, dim=-1)[0, 1].item())
     print(f"Prediction   : P(cardiotoxic) = {prob_pos:.4f}  (true label = {label})")
 
-    # Limit all visualization to non-padding token positions
+    # Limit all visualization to non-padding token positions.
+    # CLS is always position 0 — exclude it from bar charts (its attribution
+    # is trivially high since the classifier reads directly from it).
     concept_ids_1d = batch["concept_ids"][0].cpu()
+    visit_ids_1d   = batch["visit_ids"][0].cpu()
+    dates_1d       = batch["dates"][0].cpu() if "dates" in batch else None
     n_active       = int((concept_ids_1d != 0).sum().item())
-    raw_tokens, token_labels = _decode_tokens(concept_ids_1d[:n_active], inv_vocab)
+
+    # Heatmap labels include [V{n}] visit suffix so repeated features are distinguishable
+    raw_tokens, token_labels = _decode_tokens(
+        concept_ids_1d[:n_active], inv_vocab, visit_ids_1d[:n_active]
+    )
+
+    # Days before prediction for each token (negative = before prediction time)
+    pred_days   = _prediction_days(meta["prediction_time"])
+    days_before = (dates_1d[:n_active].float() - pred_days) if dates_1d is not None \
+                  else torch.zeros(n_active)
+
+    # Slices used for bar charts and aggregation: skip position 0 (CLS)
+    raw_content    = raw_tokens[1:]
+    labels_content = token_labels[1:]
+    visit_content  = visit_ids_1d[1:n_active]
+    days_content   = days_before[1:]
+    n_content      = len(raw_content)
 
     title_prefix = (
         f"subject {meta['subject_id']} cycle {meta['cycle_number']} "
@@ -544,46 +785,64 @@ def explain(
 
     # ── 2. Attention rollout ─────────────────────────────────────────────────
     print("\nComputing attention rollout...")
-    rollout        = compute_rollout(all_attn)           # (seq_len,)
+    rollout        = compute_rollout(all_attn)                 # (seq_len,)
     rollout_active = rollout[:n_active].cpu()
+    rollout_content = rollout_active[1:]                       # skip CLS
 
     plot_token_bar(
-        scores       = rollout_active,
-        token_labels = token_labels,
-        raw_tokens   = raw_tokens,
+        scores       = rollout_content,
+        token_labels = labels_content,
+        raw_tokens   = raw_content,
         title        = f"Attention Rollout — {title_prefix}",
         ylabel       = "Rollout relevance score",
         output_path  = output_dir / "attention_rollout.png",
-        top_k        = min(top_k, n_active),
+        top_k        = min(top_k, n_content),
     )
     print("  Saved attention_rollout.png")
 
     # ── 3. Integrated Gradients ──────────────────────────────────────────────
-    ig_scores: torch.Tensor | None = None
+    ig_l2: torch.Tensor | None     = None
+    ig_signed: torch.Tensor | None = None
     if not skip_ig:
         print(
             f"\nComputing Integrated Gradients "
             f"({ig_steps} steps, baseline = zero embedding)..."
         )
         try:
-            ig_full, delta = compute_integrated_gradients(
+            ig_full_l2, ig_full_signed, delta = compute_integrated_gradients(
                 model, batch, target_class=1, n_steps=ig_steps,
             )
-            ig_scores  = ig_full[:n_active].cpu()
-            delta_warn = "  ✓" if delta < 0.01 else f"  ⚠ consider more --ig-steps"
+            # Skip CLS (position 0) for all IG plots
+            ig_l2    = ig_full_l2[1:n_active].cpu()
+            ig_signed = ig_full_signed[1:n_active].cpu()
+
+            delta_warn = "  ✓" if delta < 0.01 else "  ⚠ consider more --ig-steps"
             print(f"  Convergence delta: {delta:.6f}{delta_warn}")
 
-            plot_token_bar(
-                scores            = ig_scores,
-                token_labels      = token_labels,
-                raw_tokens        = raw_tokens,
-                title             = f"Integrated Gradients — {title_prefix}",
-                ylabel            = "IG attribution (L2 norm over d_model)",
+            # Signed IG — primary plot: sort by absolute value, colour by direction
+            plot_signed_ig_bar(
+                scores            = ig_signed,
+                token_labels      = labels_content,
+                raw_tokens        = raw_content,
+                title             = f"Integrated Gradients (signed) — {title_prefix}",
                 output_path       = output_dir / "integrated_gradients.png",
-                top_k             = min(top_k, n_active),
+                top_k             = min(top_k, n_content),
                 convergence_delta = delta,
             )
             print("  Saved integrated_gradients.png")
+
+            # L2-norm IG — unsigned magnitude reference
+            plot_token_bar(
+                scores            = ig_l2,
+                token_labels      = labels_content,
+                raw_tokens        = raw_content,
+                title             = f"Integrated Gradients (magnitude) — {title_prefix}",
+                ylabel            = "IG attribution (L2 norm over d_model)",
+                output_path       = output_dir / "integrated_gradients_magnitude.png",
+                top_k             = min(top_k, n_content),
+                convergence_delta = delta,
+            )
+            print("  Saved integrated_gradients_magnitude.png")
         except ImportError as e:
             print(f"  Skipping IG: {e}")
     else:
@@ -591,14 +850,39 @@ def explain(
 
     # ── 4. Attributions CSV ──────────────────────────────────────────────────
     save_attributions_csv(
-        output_path    = output_dir / "attributions.csv",
-        token_labels   = token_labels,
-        raw_tokens     = raw_tokens,
-        rollout_scores = rollout_active,
-        ig_scores      = ig_scores,
+        output_path      = output_dir / "attributions.csv",
+        token_labels     = labels_content,
+        raw_tokens       = raw_content,
+        rollout_scores   = rollout_content,
+        ig_scores_l2     = ig_l2,
+        ig_scores_signed = ig_signed,
     )
     print(f"\nAttributions CSV → {output_dir / 'attributions.csv'}")
-    print(f"All outputs     → {output_dir}")
+
+    # ── 5. Feature aggregation ────────────────────────────────────────────────
+    # Groups repeated occurrences of the same token type, computes mean IG
+    # and temporal location (mean days before prediction, mean visit number).
+    feat_df = build_feature_aggregation(
+        raw_tokens     = raw_content,
+        token_labels   = labels_content,
+        rollout_scores = rollout_content,
+        visit_ids      = visit_content,
+        days_before    = days_content,
+        ig_l2          = ig_l2,
+        ig_signed      = ig_signed,
+    )
+    feat_csv = output_dir / "feature_importance.csv"
+    feat_df.to_csv(feat_csv, index=False)
+    print(f"Feature summary CSV → {feat_csv}")
+
+    plot_feature_importance(
+        feat_df     = feat_df,
+        output_path = output_dir / "feature_importance.png",
+        title       = f"Feature importance (aggregated) — {title_prefix}",
+        top_k       = min(top_k, len(feat_df)),
+    )
+    print(f"Feature importance plot → {output_dir / 'feature_importance.png'}")
+    print(f"All outputs → {output_dir}")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
