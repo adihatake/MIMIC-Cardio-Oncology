@@ -320,6 +320,41 @@ NARROW_CV_PIPELINE = PipelineConfig(
     unknown_followup_label="unknown_insufficient_followup",
 )
 
+PAN_CANCER_PER_CYCLE_PIPELINE = PipelineConfig(
+    name="pan_cancer_per_cycle",
+    prescriptions_sql_file="prescriptions_pan_cancer.sql",
+    cycle_sql_files=[
+        "00_parameters_and_windows.sql",
+        "01_drug_classification_and_first_drug.sql",
+        "02_cycle_exposures.sql",
+        "03_hf_and_preexisting.sql",
+        "04_echo_events.sql",
+        "05_combined_cardiotox_event.sql",
+        "06_observation_and_death.sql",
+        "07_final_modeling_table.sql",
+    ],
+    progress_views=[
+        ("pcr_cycle_exposures",                          "pcr_cycle_exposures"),
+        ("pcr_incident_hf_events",                       "pcr_incident_hf_events"),
+        ("pcr_first_echo_cardiotox_event",               "pcr_first_echo_cardiotox_event"),
+        ("pcr_first_combined_cardiotox_event",           "pcr_first_combined_cardiotox_event"),
+        ("pcr_final_cycle_modeling_table",               "pcr_final_cycle_modeling_table"),
+        ("pcr_final_binary_modeling_table_inclusive",    "pcr_final_binary_modeling_table_inclusive"),
+        ("pcr_final_binary_modeling_table_strict",       "pcr_final_binary_modeling_table_strict"),
+    ],
+    full_table_view="pcr_final_cycle_modeling_table",
+    binary_table_views=[
+        ("pcr_final_binary_modeling_table_inclusive", "pcr_final_binary_modeling_table_inclusive"),
+        ("pcr_final_binary_modeling_table_strict",    "pcr_final_binary_modeling_table_strict"),
+    ],
+    anchor_view="pcr_patient_first_drug",
+    sort_cols=["subject_id", "cycle_number"],
+    drug_class_col="drug_classes_in_cycle",
+    positive_col="binary_label",
+    preexisting_cols=["has_pre_existing_hf", "has_pre_existing_cmp"],
+    unknown_followup_label="unknown_insufficient_followup",
+)
+
 ANTHRACYCLINE_ONLY_PIPELINE = PipelineConfig(
     name="anthracycline_only_exposure",
     prescriptions_sql_file="prescriptions_pan_cancer.sql",
@@ -365,5 +400,6 @@ PIPELINE_REGISTRY: dict[str, PipelineConfig] = {
     "pan_cancer_bimodal":         PAN_CANCER_BIMODAL_PIPELINE,
     "broad_cv":                   BROAD_CV_PIPELINE,
     "narrow_cv":                  NARROW_CV_PIPELINE,
+    "pan_cancer_per_cycle":        PAN_CANCER_PER_CYCLE_PIPELINE,
     "anthracycline_only_exposure": ANTHRACYCLINE_ONLY_PIPELINE,
 }
