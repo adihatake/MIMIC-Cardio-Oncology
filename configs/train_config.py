@@ -43,6 +43,9 @@ class TrainConfig:
     d_expand:      int  = 2
     bidirectional: bool = True
 
+    # ── evaluation ───────────────────────────────────────────────────────────
+    eval_threshold: float = 0.5  # threshold for sensitivity/specificity/F1 logged during training
+
     # ── runtime ───────────────────────────────────────────────────────────────
     num_workers: int = 0
     device:      str = "auto"   # "auto" | "cpu" | "cuda" | "mps"

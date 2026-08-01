@@ -79,7 +79,8 @@ def _load_meta(data_dir: Path) -> tuple[dict, dict]:
 
 
 @torch.no_grad()
-def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.device) -> dict:
+def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.device,
+             threshold: float = 0.5) -> dict:
     model.eval()
     total_loss, n = 0.0, 0
     all_labels, all_probs = [], []
@@ -107,7 +108,7 @@ def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.devic
     try:
         auroc = roc_auc_score(all_labels, all_probs)
         auprc = average_precision_score(all_labels, all_probs, pos_label=1)
-        preds = [1 if p >= 0.5 else 0 for p in all_probs]
+        preds = [1 if p >= threshold else 0 for p in all_probs]
         _, sensitivity, f1, _ = precision_recall_fscore_support(
             all_labels, preds, average="binary", pos_label=1, zero_division=0
         )
@@ -124,6 +125,7 @@ def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.devic
         "f1":          f1,
         "sensitivity": sensitivity,
         "specificity": specificity,
+        "eval_threshold": threshold,
     }
 
 
@@ -281,7 +283,8 @@ def train(args: argparse.Namespace | object) -> None:
 
         scheduler.step()
         avg_train_loss = train_loss / n
-        val_metrics    = evaluate(model, val_dl, criterion, device)
+        val_metrics    = evaluate(model, val_dl, criterion, device,
+                                  threshold=getattr(args, "eval_threshold", 0.5))
         elapsed        = time.time() - t0
 
         updated = []
@@ -335,7 +338,8 @@ def train(args: argparse.Namespace | object) -> None:
         model.load_state_dict(
             torch.load(output_dir / f"best_model_{m}.pt", weights_only=True)
         )
-        tm = evaluate(model, test_dl, criterion, device)
+        tm = evaluate(model, test_dl, criterion, device,
+                      threshold=getattr(args, "eval_threshold", 0.5))
         all_test_metrics[m] = tm
         with open(output_dir / f"test_metrics_{m}.json", "w") as f:
             json.dump(tm, f, indent=2)
@@ -398,6 +402,8 @@ def parse_args() -> argparse.Namespace:
                    help="Add sinusoidal time-gap embedding per token (requires dates.pt).")
     p.add_argument("--use-age",  action="store_true", dest="use_age",
                    help="Add continuous-age sinusoidal embedding (requires age_years.pt).")
+    p.add_argument("--eval-threshold", type=float, default=0.5, dest="eval_threshold",
+                   help="Decision threshold used when logging sensitivity/specificity/F1 during training.")
 
     return p.parse_args()
 

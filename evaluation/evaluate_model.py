@@ -173,6 +173,73 @@ def _compute_metrics(labels: list[int], probs: list[float], threshold: float = 0
     }
 
 
+# ── threshold sweep ───────────────────────────────────────────────────────────
+
+def _threshold_sweep(
+    labels: list[int],
+    probs:  list[float],
+    step:   float = 0.05,
+    target_sensitivity: float = 0.70,
+) -> None:
+    import numpy as np
+    from rich.console import Console
+    from rich.table import Table
+    from rich import box
+
+    console = Console()
+    thresholds = [round(t, 3) for t in np.arange(step, 1.0, step).tolist()]
+
+    rows = []
+    for t in thresholds:
+        m = _compute_metrics(labels, probs, threshold=t)
+        youden = m["sensitivity"] + m["specificity"] - 1.0
+        rows.append((t, m["sensitivity"], m["specificity"], youden, m["f1"], m["precision"]))
+
+    best_youden = max(rows, key=lambda r: r[3])
+    meets_target = [r for r in rows if r[1] >= target_sensitivity]
+    best_target  = max(meets_target, key=lambda r: r[3]) if meets_target else None
+
+    table = Table(box=box.SIMPLE_HEAD, show_header=True, header_style="bold", expand=False)
+    table.add_column("Threshold",   width=10, justify="right")
+    table.add_column("Sensitivity", width=12, justify="right")
+    table.add_column("Specificity", width=12, justify="right")
+    table.add_column("Youden J",    width=10, justify="right")
+    table.add_column("F1",          width=8,  justify="right")
+    table.add_column("Precision",   width=10, justify="right")
+    table.add_column("",            width=6)
+
+    for r in rows:
+        t, sens, spec, youden, f1, prec = r
+        tag = ""
+        if t == best_youden[0]:
+            tag = "[bold yellow]★ J[/]"
+        if best_target and t == best_target[0] and t != best_youden[0]:
+            tag = "[bold cyan]★ tgt[/]"
+        style = "bold" if tag else ""
+        table.add_row(
+            f"{t:.2f}", f"{sens:.4f}", f"{spec:.4f}",
+            f"{youden:.4f}", f"{f1:.4f}", f"{prec:.4f}", tag,
+            style=style,
+        )
+
+    console.print(
+        f"\n[bold]Threshold sweep[/] "
+        f"(★ J = best Youden's J; ★ tgt = best Youden's J with sensitivity ≥ {target_sensitivity})\n"
+    )
+    console.print(table)
+    console.print(
+        f"\n[bold yellow]Best Youden's J:[/]  threshold={best_youden[0]:.2f}  "
+        f"sens={best_youden[1]:.4f}  spec={best_youden[2]:.4f}  J={best_youden[3]:.4f}"
+    )
+    if best_target:
+        console.print(
+            f"[bold cyan]Best sens≥{target_sensitivity}:[/]  threshold={best_target[0]:.2f}  "
+            f"sens={best_target[1]:.4f}  spec={best_target[2]:.4f}  J={best_target[3]:.4f}"
+        )
+    else:
+        console.print(f"[red]No threshold achieves sensitivity ≥ {target_sensitivity}[/]")
+
+
 # ── display ───────────────────────────────────────────────────────────────────
 
 def _display_results(
@@ -327,6 +394,12 @@ def parse_args() -> argparse.Namespace:
                    choices=["auroc", "auprc", "f1", "sensitivity", "specificity"],
                    help="Which per-metric checkpoint to load (best_model_{metric}.pt). "
                         "Falls back to best_model.pt for older runs.")
+    p.add_argument("--sweep", action="store_true",
+                   help="Sweep thresholds from 0.05–0.95 and report sensitivity/specificity table.")
+    p.add_argument("--sweep-step", type=float, default=0.05, dest="sweep_step",
+                   help="Step size for threshold sweep.")
+    p.add_argument("--target-sensitivity", type=float, default=0.70, dest="target_sensitivity",
+                   help="Target minimum sensitivity for sweep recommendation.")
     return p.parse_args()
 
 
@@ -372,7 +445,11 @@ def main() -> None:
     print(f"Running on {args.split} split (seed={seed}, {len(split_rows)} samples) …")
 
     probs, labels = _run_inference(model, tensors, split_rows, device, args.batch_size)
-    metrics       = _compute_metrics(labels, probs, threshold=args.threshold)
+
+    if args.sweep:
+        _threshold_sweep(labels, probs, step=args.sweep_step, target_sensitivity=args.target_sensitivity)
+
+    metrics = _compute_metrics(labels, probs, threshold=args.threshold)
 
     _display_results(
         metrics, args.split, split_rows, samples_meta,
