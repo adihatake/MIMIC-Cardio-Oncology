@@ -10,9 +10,11 @@ For day-to-day work, run the individual scripts instead:
     python run_tokenization.py
 
 PIPELINE options  (see cohort_src/cohort_pipeline.py):
-    "hf_cardiotox_v2" — combined CTRCD endpoint (ICD HF + LVEF + GLS, 3 drug classes)
-    "hf_cardiotox"    — ICD HF endpoint only (3 drug classes, per-class windows)
-    "main"            — LVEF + CV toxicity endpoint
+    "pan_cancer_per_cycle"   — 10 drug classes, one row per cycle, ESC 2022 class-specific windows
+    "pan_cancer_uniform_365" — same as pan_cancer_per_cycle but uniform 365-day window (risk stratification)
+    "hf_cardiotox_v2"        — combined CTRCD endpoint (ICD HF + LVEF + GLS, 3 drug classes)
+    "hf_cardiotox"           — ICD HF endpoint only (3 drug classes, per-class windows)
+    "main"                   — LVEF + CV toxicity endpoint
 """
 
 from pathlib import Path

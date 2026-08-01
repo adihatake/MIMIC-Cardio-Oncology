@@ -1,14 +1,14 @@
 """
 run_train.py
 
-Architecture sweep for the pan_cancer_per_cycle cohort.
+Architecture sweep for the pan_cancer_uniform_365 cohort.
 Runs arch S and arch M × 4 dataset variants × 5 seeds.
 
 Tokenization variants (produced by run_tokenization.py):
-    Jul31_pan_cancer_per_cycle_v1_all_labs
-    Jul31_pan_cancer_per_cycle_v1_cardiac_labs
-    Jul31_pan_cancer_per_cycle_v1_bucketed_all_labs
-    Jul31_pan_cancer_per_cycle_v1_bucketed_cardiac_labs
+    Jul31_pan_cancer_uniform_365_v1_all_labs
+    Jul31_pan_cancer_uniform_365_v1_cardiac_labs
+    Jul31_pan_cancer_uniform_365_v1_bucketed_all_labs
+    Jul31_pan_cancer_uniform_365_v1_bucketed_cardiac_labs
 
 Architecture S (baseline):
     d_model=64,  num_heads=4, num_layers=1, ff_dim=128   (~940K params)
@@ -33,7 +33,7 @@ from configs import TrainConfig
 import model_src.train as train_module
 
 # ── output root ───────────────────────────────────────────────────────────────
-OUT_ROOT = Path("experiment_outputs/July31/pan_cancer_cycles/")
+OUT_ROOT = Path("experiment_outputs/July31/pan_cancer_uniform_365/")
 
 # ── architectures ─────────────────────────────────────────────────────────────
 _ARCH_S = dict(d_model=64,  num_heads=4, num_layers=1, ff_dim=128)
@@ -59,10 +59,10 @@ SEEDS = [42, 52, 62, 72, 82]
 
 # ── dataset variants ──────────────────────────────────────────────────────────
 DATASETS = [
-    ("all_labs",              "Jul31_pan_cancer_per_cycle_v1_all_labs"),
-    ("cardiac_labs",          "Jul31_pan_cancer_per_cycle_v1_cardiac_labs"),
-    ("bucketed_all_labs",     "Jul31_pan_cancer_per_cycle_v1_bucketed_all_labs"),
-    ("bucketed_cardiac_labs", "Jul31_pan_cancer_per_cycle_v1_bucketed_cardiac_labs"),
+    ("all_labs",              "Jul31_pan_cancer_uniform_365_v1_all_labs"),
+    ("cardiac_labs",          "Jul31_pan_cancer_uniform_365_v1_cardiac_labs"),
+    ("bucketed_all_labs",     "Jul31_pan_cancer_uniform_365_v1_bucketed_all_labs"),
+    ("bucketed_cardiac_labs", "Jul31_pan_cancer_uniform_365_v1_bucketed_cardiac_labs"),
 ]
 
 # ── build run list ─────────────────────────────────────────────────────────────

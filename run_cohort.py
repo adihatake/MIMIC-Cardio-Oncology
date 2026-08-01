@@ -10,6 +10,7 @@ and register it in PIPELINE_REGISTRY. No other Python changes needed.
 
 PIPELINE options  (see cohort_src/cohort_pipeline.py):
     "pan_cancer_per_cycle"       — 10 drug classes, one row per cycle, ESC 2022 class-specific windows, ICD HF + LVEF + GLS endpoint
+    "pan_cancer_uniform_365"     — same as pan_cancer_per_cycle but uniform 365-day window for all drug classes (risk stratification)
     "anthracycline_only_exposure" — anthracycline-first patients only, combined CTRCD endpoint
     "hf_cardiotox_v2"            — combined CTRCD endpoint (ICD HF + LVEF + GLS, 3 drug classes, ESC 2022 windows)
     "pan_cancer_ctrcd"           — 10 pan-cancer drug classes, combined CTRCD endpoint, uniform 365-day window
@@ -31,8 +32,8 @@ import cohort_src.generate_cohort as cohort_module
 REPO_ROOT = Path(__file__).resolve().parent
 
 # ── configure here ────────────────────────────────────────────────────────────
-PIPELINE    = "pan_cancer_per_cycle"   # see options above
-OUTPUT_NAME = "pan_cancer_per_cycle_v1"
+PIPELINE    = "pan_cancer_uniform_365"   # see options above
+OUTPUT_NAME = "pan_cancer_uniform_365_v1"
 
 # Override SQL dirs only when pointing at a non-default version subdirectory
 # (e.g. "jul28_alt" instead of the canonical "hf_cardiotox" folder).
