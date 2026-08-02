@@ -16,6 +16,7 @@ class TrainConfig:
     batch_size:      int   = 32
     lr:              float = 1e-4
     weight_decay:    float = 1e-2
+    warmup_frac:     float = 0.1   # fraction of epochs used for linear LR warmup
     label_smoothing: float = 0.0
 
     # ── model selection ───────────────────────────────────────────────────────

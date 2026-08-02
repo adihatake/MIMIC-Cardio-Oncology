@@ -209,8 +209,17 @@ def train(args: argparse.Namespace | object) -> None:
         weight=class_weights,
         label_smoothing=getattr(args, "label_smoothing", 0.0),
     )
-    optimizer = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay) ## Need to adjust/experiment with
-    scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr / 10) ## Need to adjust/experiment with
+    optimizer     = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    warmup_epochs = max(1, round(getattr(args, "warmup_frac", 0.1) * args.epochs))
+    warmup   = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs,
+    )
+    cosine   = CosineAnnealingLR(
+        optimizer, T_max=args.epochs - warmup_epochs, eta_min=args.lr / 10,
+    )
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs],
+    )
     scaler    = GradScaler("cuda", enabled=device.type == "cuda")
 
     if device.type == "cuda":
@@ -402,6 +411,8 @@ def parse_args() -> argparse.Namespace:
                    help="Add sinusoidal time-gap embedding per token (requires dates.pt).")
     p.add_argument("--use-age",  action="store_true", dest="use_age",
                    help="Add continuous-age sinusoidal embedding (requires age_years.pt).")
+    p.add_argument("--warmup-frac", type=float, default=0.1, dest="warmup_frac",
+                   help="Fraction of epochs used for linear LR warmup (default 0.1).")
     p.add_argument("--eval-threshold", type=float, default=0.5, dest="eval_threshold",
                    help="Decision threshold used when logging sensitivity/specificity/F1 during training.")
 
