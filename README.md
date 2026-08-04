@@ -316,7 +316,7 @@ Each epoch, the training loop saves a checkpoint whenever a metric improves. Aft
 
 ---
 
-## Step 5 — Interpret (xAI)
+## Step 5 — Interpret (xAI, single sample)
 
 Post-training interpretability using three complementary techniques:
 
@@ -374,6 +374,96 @@ python interpretation/visualize_attributions.py \
 | `comparison_top{K}.png` | IG (top) and rollout (bottom) for the same top-K tokens on aligned panels |
 | `event_type_breakdown.png` | Total attribution summed by event type |
 | `rollout_vs_ig_scatter.png` | Per-token scatter: rollout vs IG score; top-5 IG tokens annotated |
+
+---
+
+## Step 6 — Population and patient-level xAI
+
+Higher-level interpretability across the full dataset and for individual patients.
+Requires the same `captum` install as Step 5 for aggregate IG.
+
+### Runner script
+
+Edit `MODEL_DIR`, `DATA_DIR`, `DATASET_SPLIT`, and optionally `PATIENT_SUBJECT_ID`
+at the top of `run_xai.py`, then:
+
+```bash
+python run_xai.py
+```
+
+### Dataset-level outputs (`interpretation/xai_outputs/dataset/`)
+
+| File | Description |
+|---|---|
+| `cls_space_by_label.png` | UMAP/PCA of CLS embeddings coloured by true label |
+| `cls_space_by_prob.png` | Same projection coloured by P(cardiotoxic) |
+| `cls_space_by_cycle.png` | Same projection coloured by cycle number |
+| `cls_coords_2d.npy` | Raw 2-D coordinates (reusable for downstream plots) |
+| `population_ig.png` | Top-K features by |mean signed IG| across the split, ±1 SEM |
+| `population_ig_cache.csv` | Cached per-feature IG scores (delete to recompute) |
+
+Toggle `DATASET_SPLIT = "test"` (default) or `"all"` to control which samples appear.
+
+Key knobs in `run_xai.py`:
+
+| Variable | Default | Description |
+|---|---|---|
+| `DATASET_SPLIT` | `"test"` | `"test"`, `"val"`, `"train"`, or `"all"` |
+| `DIM_REDUCTION` | `"umap"` | `"umap"` (best), `"pca"`, or `"tsne"` |
+| `RUN_POPULATION_IG` | `True` | Set `False` to skip IG (fast UMAP-only run) |
+| `MAX_IG_SAMPLES` | `50` | Random subsample size for population IG |
+| `IG_STEPS_POPULATION` | `30` | Integration steps (fewer = faster; 30 is usually enough) |
+| `POP_IG_TOP_K` | `25` | Features shown in the bar chart |
+
+### Per-patient outputs (`interpretation/xai_outputs/patient_{ID}/`)
+
+Set `PATIENT_SUBJECT_ID = <subject_id>` in `run_xai.py`.
+
+| File | Description |
+|---|---|
+| `cls_trajectory.png` | CLS trajectory across cycles on the test cluster background |
+| `rollout_per_cycle.png` | Side-by-side attention rollout bars for each cycle |
+| `rollout_heatmap.png` | Feature × cycle heatmap of rollout relevance scores |
+| `perturbation_trajectory.png` | CLS shift under token edits (requires `PERTURBATION_SPECS`) |
+| `perturbation_delta.png` | ΔP(cardiotoxic) per perturbation per cycle |
+
+### Perturbation analysis
+
+Define token edits in `PERTURBATION_SPECS` in `run_xai.py`. Three types are supported:
+
+```python
+PERTURBATION_SPECS = [
+    # Zero out all tokens matching a feature prefix
+    {"name": "Remove NTproBNP",
+     "type": "zero_feature",
+     "feature_pattern": "lab::50963"},
+
+    # Swap one specific quantile bucket for another
+    {"name": "NTproBNP Q4 → Q1",
+     "type": "replace_token",
+     "from_token": "lab::50963_Q4",
+     "to_token":   "lab::50963_Q1"},
+
+    # Remove all tokens from the last visit
+    {"name": "Remove last visit",
+     "type": "remove_visit",
+     "visit_offset": -1},   # 0 = first visit, -1 = last
+]
+```
+
+Each perturbation appears as a separate coloured trajectory in `perturbation_trajectory.png`
+and a separate bar group in `perturbation_delta.png`.
+
+### Package structure (`interpretation/xai/`)
+
+| File | Responsibility |
+|---|---|
+| `utils.py` | Constants, data loading (`load_setup`), split helpers |
+| `embeddings.py` | CLS extraction, prediction probabilities, UMAP/PCA/t-SNE |
+| `population.py` | `plot_cls_embedding_space`, `compute_population_ig`, `plot_population_ig` |
+| `patient.py` | `get_patient_cycle_data`, `plot_cls_trajectory`, rollout plots |
+| `perturbation.py` | `apply_perturbation`, `run_perturbation_analysis`, ΔP plots |
+| `__init__.py` | Re-exports all public functions as `interpretation.xai.*` |
 
 ---
 
@@ -549,6 +639,17 @@ XGBoost baseline using hand-crafted features derived from the binary modeling ta
 python run_xgboost.py
 ```
 
+### `run_xai.py`
+
+Population and patient-level xAI. Configure `MODEL_DIR`, `DATA_DIR`,
+`DATASET_SPLIT`, `PATIENT_SUBJECT_ID`, and `PERTURBATION_SPECS` at the top:
+
+```bash
+python run_xai.py
+```
+
+See **Step 6** above for full documentation.
+
 ### `run_interpretation.py`
 
 Batch interpretability runner. Define samples in `RUNS`, then:
@@ -717,8 +818,15 @@ MIMIC-Cardio-Oncology/
 │   ├── compare_ablations.py               Mean ± std across seeds, all metrics
 │   └── plot_history.py                    Training curves (mean ± std across seeds)
 ├── interpretation/
-│   ├── interpret.py                       Attention heatmaps + rollout + Integrated Gradients
-│   └── visualize_attributions.py          Summary plots from attributions.csv
+│   ├── interpret.py                       Attention heatmaps + rollout + Integrated Gradients (single sample)
+│   ├── visualize_attributions.py          Summary plots from attributions.csv
+│   └── xai/                              Population and patient-level xAI package
+│       ├── __init__.py                    Re-exports all public functions
+│       ├── utils.py                       Constants, data loading, split helpers
+│       ├── embeddings.py                  CLS extraction, predictions, UMAP/PCA/t-SNE
+│       ├── population.py                  CLS embedding space + aggregate IG
+│       ├── patient.py                     CLS trajectory + attention rollout plots
+│       └── perturbation.py               Token edits, CLS shift, ΔP plots
 ├── model_src/
 │   ├── embedding_layers.py                EHR_Event_Embedding + TimeEmbeddingLayer
 │   ├── ehr_encoder.py                     EHR_Encoder (Transformer, return_attention hook)
@@ -749,7 +857,8 @@ MIMIC-Cardio-Oncology/
 ├── run_comparisons.py                     Runner: generate all sweep comparison plots
 ├── run_mamba.py                           Runner: Mamba training
 ├── run_xgboost.py                         Runner: XGBoost baseline
-└── run_interpretation.py                  Runner: batch xAI interpretation
+├── run_interpretation.py                  Runner: batch xAI interpretation (single sample)
+└── run_xai.py                             Runner: population + patient-level xAI
 ```
 
 ---
