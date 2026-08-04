@@ -222,16 +222,19 @@ def train(args: argparse.Namespace | object) -> None:
         label_smoothing=getattr(args, "label_smoothing", 0.0),
     )
     optimizer     = AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    warmup_epochs = max(1, round(getattr(args, "warmup_frac", 0.1) * args.epochs))
-    warmup   = torch.optim.lr_scheduler.LinearLR(
-        optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs,
-    )
-    cosine   = CosineAnnealingLR(
-        optimizer, T_max=args.epochs - warmup_epochs, eta_min=args.lr / 10,
-    )
-    scheduler = torch.optim.lr_scheduler.SequentialLR(
-        optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs],
-    )
+    warmup_epochs = max(0, round(getattr(args, "warmup_frac", 0.1) * args.epochs))
+    if warmup_epochs == 0:
+        scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=args.lr / 10)
+    else:
+        warmup  = torch.optim.lr_scheduler.LinearLR(
+            optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs,
+        )
+        cosine  = CosineAnnealingLR(
+            optimizer, T_max=args.epochs - warmup_epochs, eta_min=args.lr / 10,
+        )
+        scheduler = torch.optim.lr_scheduler.SequentialLR(
+            optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs],
+        )
     scaler = GradScaler("cuda", enabled=device.type == "cuda")
 
     if device.type == "cuda":

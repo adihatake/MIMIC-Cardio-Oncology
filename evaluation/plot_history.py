@@ -84,11 +84,15 @@ def _load_variant(model_dir: Path) -> tuple[list[list[dict]], str]:
 def _agg(
     histories: list[list[dict]], key: str
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Mean, mean−std, mean+std across seeds for a given metric key."""
+    """Mean, mean−std, mean+std across seeds for a given metric key.
+
+    Uses sample std (ddof=1) to match compare_ablations.py.  Falls back to
+    zero-width band for single-seed inputs.
+    """
     min_len = min(len(h) for h in histories)
     arr     = np.array([[row[key] for row in hist[:min_len]] for hist in histories])
     mean    = arr.mean(axis=0)
-    std     = arr.std(axis=0)
+    std     = arr.std(axis=0, ddof=1) if arr.shape[0] > 1 else np.zeros_like(mean)
     return mean, mean - std, mean + std
 
 
@@ -160,7 +164,13 @@ def plot(
 
             best_idx   = int(np.argmax(m_mean))
             best_val   = float(m_mean[best_idx])
-            best_std   = float(np.std([max(row[metric] for row in hist) for hist in histories]))
+            # std of each seed's value AT the epoch where the mean peaks,
+            # not the std of per-seed maxima (which occur at different epochs).
+            per_seed_at_best = [hist[best_idx][metric] for hist in histories]
+            best_std = (
+                float(np.std(per_seed_at_best, ddof=1))
+                if len(histories) > 1 else 0.0
+            )
             best_epoch = epochs[best_idx]
             ax.axvline(best_epoch, color=color, ls=":", alpha=0.4, lw=0.8)
             best_ann[metric].append((label, best_val, best_std, best_epoch))
