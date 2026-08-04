@@ -121,7 +121,7 @@ def reduce_dim(
         try:
             import umap as umap_lib
             reducer = umap_lib.UMAP(n_components=n_components,
-                                    random_state=random_state, **kwargs)
+                                    random_state=random_state, n_jobs=1, **kwargs)
             return reducer.fit_transform(embeddings), "UMAP"
         except ImportError:
             warnings.warn("umap-learn not installed — falling back to PCA. "
