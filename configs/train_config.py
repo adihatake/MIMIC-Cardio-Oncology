@@ -57,6 +57,12 @@ class TrainConfig:
     wandb_project: str        = "mimic-cardio-oncology"
     run_name:      str | None = None   # defaults to wandb auto-generated name
 
+    # ── multi-task prompt finetuning ─────────────────────────────────────────
+    # num_tasks=0  standard single-task (365d window only, no task token)
+    # num_tasks=3  multi-task (90d / 180d / 365d); requires a tokenization
+    #              produced with --multitask, which emits task_ids.pt
+    num_tasks: int = 0
+
     # ── embedding ablation flags ──────────────────────────────────────────────
     # fusion    "add"    BEHRT-style: element-wise sum of all embedding tables.
     #           "concat" CEHR-BERT style: cat([concept, time*, age*, position]) →

@@ -104,6 +104,30 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Include only flagged-abnormal lab results (default behaviour; explicit form).",
     )
+    parser.add_argument(
+        "--cardiac-labs-only",
+        action="store_true",
+        help="Restrict labs to the cardiac-relevant panel (troponin, BNP/NT-proBNP, "
+             "creatinine, electrolytes, CBC, LFTs, LDH, CRP). Reduces noise and "
+             "preserves sequence budget for clinical history.",
+    )
+    parser.add_argument(
+        "--insert-att",
+        action="store_true",
+        help="Insert CEHR-BERT Artificial Time Tokens (W0–W3, M1–M11, LT) between visits.",
+    )
+    parser.add_argument(
+        "--insert-visit-delimiters",
+        action="store_true",
+        help="Wrap each visit's events with [V_START] / [V_END] tokens.",
+    )
+    parser.add_argument(
+        "--multitask",
+        action="store_true",
+        help="Produce labels for 90d, 180d, and 365d windows. Each cycle yields 3 rows "
+             "with a task_id (0=90d, 1=180d, 2=365d). Saves task_ids.pt. "
+             "Required before running run_multitask_train.py.",
+    )
     return parser.parse_args()
 
 
@@ -129,6 +153,10 @@ def main() -> None:
     print(f"  bucket meds   : {args.bucket_medications}")
     print(f"  include all labs    : {args.include_all_labs}")
     print(f"  only abnormal labs  : {args.only_abnormal_labs or not args.include_all_labs}")
+    print(f"  cardiac labs only   : {args.cardiac_labs_only}")
+    print(f"  insert ATT          : {args.insert_att}")
+    print(f"  insert visit delims : {args.insert_visit_delimiters}")
+    print(f"  multitask           : {args.multitask}")
     print("=" * 55)
     print()
 
@@ -143,6 +171,10 @@ def main() -> None:
         bucket_medications=args.bucket_medications,
         include_all_labs=args.include_all_labs,
         only_abnormal_labs=args.only_abnormal_labs,
+        cardiac_labs_only=args.cardiac_labs_only,
+        insert_att=args.insert_att,
+        insert_visit_delimiters=args.insert_visit_delimiters,
+        multitask=args.multitask,
     )
 
     # ── step 2: split ─────────────────────────────────────────────────────────

@@ -587,6 +587,7 @@ def main(
     only_abnormal_labs: bool = True,
     include_all_labs: bool = False,
     cardiac_labs_only: bool = False,
+    multitask: bool = False,
 ) -> None:
     if include_all_labs and only_abnormal_labs:
         raise ValueError("include_all_labs=True and only_abnormal_labs=True are mutually exclusive")
@@ -658,8 +659,33 @@ def main(
         }
         if "drug_class" in row.index:
             meta["drug_class"] = str(row["drug_class"])
-        samples_meta.append(meta)
-        token_sequences.append({**tok, "age_id": age_id, "age_years": age_years, "label": label})
+
+        if multitask:
+            # Compute days from prediction_time to first cardiotoxicity event.
+            # first_event_time is NaT when no event ever occurred, or a future timestamp
+            # when an event occurred at some point (possibly outside the 365d window).
+            # Only events strictly after prediction_time count toward any window.
+            days_to_event = None
+            if "first_event_time" in row.index and pd.notna(row["first_event_time"]):
+                fet = pd.Timestamp(row["first_event_time"])
+                if fet > pred_time:
+                    days_to_event = (fet - pred_time).total_seconds() / 86400.0
+
+            # All rows in final_cycle_binary_modeling_table have >= 365d follow-up
+            # OR a confirmed event within 365d, so 90d and 180d labels are always valid.
+            for task_id, window_days in enumerate([90, 180, 365]):
+                if window_days == 365:
+                    task_label = label
+                else:
+                    task_label = 1 if (days_to_event is not None and days_to_event <= window_days) else 0
+                task_meta = {**meta, "task_id": task_id, "window_days": window_days,
+                             "binary_label": task_label}
+                samples_meta.append(task_meta)
+                token_sequences.append({**tok, "age_id": age_id, "age_years": age_years,
+                                        "label": task_label, "task_id": task_id})
+        else:
+            samples_meta.append(meta)
+            token_sequences.append({**tok, "age_id": age_id, "age_years": age_years, "label": label})
 
     print("Padding sequences and building tensors...")
     pad_id = concept_vocab["[PAD]"]
@@ -692,6 +718,9 @@ def main(
     labels_t        = torch.tensor([s["label"]     for s in token_sequences], dtype=torch.long)
 
     print("Saving outputs...")
+    if multitask:
+        task_ids_t = torch.tensor([s["task_id"] for s in token_sequences], dtype=torch.long)
+        torch.save(task_ids_t, OUTPUT_DIR / "task_ids.pt")
     torch.save(concept_ids_t,  OUTPUT_DIR / "concept_ids.pt")
     torch.save(type_ids_t,     OUTPUT_DIR / "type_ids.pt")
     torch.save(visit_ids_t,    OUTPUT_DIR / "visit_ids.pt")
@@ -740,6 +769,9 @@ def main(
         "include_all_labs":        not _only_abnormal,
         "cardiac_labs_only":       cardiac_labs_only,
         "n_cardiac_lab_itemids":   len(CARDIAC_LAB_ITEMIDS) if cardiac_labs_only else None,
+        "multitask":               multitask,
+        "task_windows":            [90, 180, 365] if multitask else [365],
+        "n_tasks":                 3 if multitask else 1,
     }
     with open(OUTPUT_DIR / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
@@ -776,6 +808,12 @@ if __name__ == "__main__":
                         "troponin, BNP/NT-proBNP, creatinine, electrolytes, CBC, LFTs, LDH, CRP). "
                         "Reduces noise and preserves sequence budget for history. "
                         "Can be combined with --include-all-labs or --only-abnormal-labs.")
+    p.add_argument("--multitask", action="store_true",
+                   help="Produce multi-task labels for 90d, 180d, and 365d prediction windows. "
+                        "Each cycle yields 3 rows (one per window) with a task_id column (0/1/2) "
+                        "and per-window binary labels computed from first_event_time. "
+                        "Saves task_ids.pt alongside the standard tensor files. "
+                        "Requires first_event_time column in the modeling table.")
     a = p.parse_args()
     main(data_dir=a.data_dir, cohort_name=a.cohort, output_name=a.name,
          max_seq_len=a.max_seq_len, insert_att=a.insert_att,
@@ -783,4 +821,5 @@ if __name__ == "__main__":
          bucket_labs=a.bucket_labs, bucket_medications=a.bucket_medications,
          include_all_labs=a.include_all_labs,
          only_abnormal_labs=a.only_abnormal_labs,
-         cardiac_labs_only=a.cardiac_labs_only)
+         cardiac_labs_only=a.cardiac_labs_only,
+         multitask=a.multitask)

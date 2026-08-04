@@ -43,8 +43,10 @@ class CycleDataset(Dataset):
         # Optional files produced by the updated tokenizer — absent for old tokenizations.
         dates_path     = data_dir / "dates.pt"
         age_years_path = data_dir / "age_years.pt"
+        task_ids_path  = data_dir / "task_ids.pt"
         self.dates     = torch.load(dates_path,     weights_only=True) if dates_path.exists()     else None
         self.age_years = torch.load(age_years_path, weights_only=True) if age_years_path.exists() else None
+        self.task_ids  = torch.load(task_ids_path,  weights_only=True) if task_ids_path.exists()  else None
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -63,6 +65,8 @@ class CycleDataset(Dataset):
             item["dates"] = self.dates[idx]
         if self.age_years is not None:
             item["age_years"] = self.age_years[idx]
+        if self.task_ids is not None:
+            item["task_id"] = self.task_ids[idx]
         return item
 
 
@@ -144,6 +148,10 @@ def get_dataloaders(
     If `seed` is given, the patient split is computed in-memory from
     samples.parquet using that seed (different seeds → different splits).
     Otherwise falls back to splits.json — run split_dataset.py first.
+
+    The training DataLoader's shuffle uses a dedicated Generator seeded from
+    `seed` so that epoch-level shuffling is independent of model-init RNG
+    consumption and reproducible across architecture changes.
     """
     data_dir = Path(data_dir)
 
@@ -160,6 +168,11 @@ def get_dataloaders(
             splits = json.load(f)
         row_indices = splits["row_indices"]
 
+    # Dedicated Generator for training shuffle — decouples epoch-order
+    # randomness from the global RNG used by model initialisation.
+    shuffle_gen = torch.Generator()
+    shuffle_gen.manual_seed(seed if seed is not None else 0)
+
     loaders: dict[str, DataLoader] = {}
     for split in ("train", "val", "test"):
         ds = CycleDataset(row_indices[split], data_dir)
@@ -167,6 +180,7 @@ def get_dataloaders(
             ds,
             batch_size=batch_size,
             shuffle=(split == "train"),
+            generator=shuffle_gen if split == "train" else None,
             num_workers=num_workers,
             pin_memory=torch.cuda.is_available(),
         )

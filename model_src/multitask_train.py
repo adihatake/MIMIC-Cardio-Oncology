@@ -1,19 +1,18 @@
 """
-train.py
+multitask_train.py
 
-One training run for the EHR_Encoder (Transformer) cardiotoxicity classifier.
+Training loop for multi-task cardiotoxicity prediction at 90 / 180 / 365 days.
 
-Reads tokenized tensors and splits from a tokenization_outputs/<name>/ directory,
-trains with cross-entropy loss (class-weighted for imbalance), evaluates on the
-validation set each epoch, and saves the best checkpoint by validation AUROC.
-
-For the Mamba model use mamba_train.py / run_mamba.py instead.
+Requires a tokenization produced with --multitask (emits task_ids.pt). Each
+(patient, cycle) row is expanded to three rows — one per prediction window —
+each prepended with a learned task token that tells the shared Transformer which
+window to predict.  A single classifier head is shared across all tasks.
 
 Usage:
-    python model_src/train.py --data-dir tokenization_outputs/ver1
+    python model_src/multitask_train.py --data-dir tokenization_outputs/mt_ver1
 
-    # smaller/faster config for debugging:
-    python model_src/train.py --data-dir tokenization_outputs/ver1 \\
+    # smaller config for debugging:
+    python model_src/multitask_train.py --data-dir tokenization_outputs/mt_ver1 \\
         --d-model 64 --num-heads 4 --num-layers 2 --epochs 3 --batch-size 16
 """
 
@@ -47,7 +46,8 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from model_src.dataset import get_dataloaders
 from model_src.ehr_encoder import EHR_Encoder
-from model_src.ehr_lstm import EHR_LSTM
+
+TASK_WINDOWS = {0: "90d", 1: "180d", 2: "365d"}
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -57,13 +57,10 @@ def _set_seed(seed: int) -> None:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
-    # Force cuDNN to use deterministic algorithms; disable auto-tuner so it
-    # doesn't pick different kernels between runs.  Small speed cost on GPU.
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark     = False
 
 
-# pick the best compute hardware
 def _device(requested: str) -> torch.device:
     if requested == "auto":
         if torch.cuda.is_available():
@@ -82,12 +79,38 @@ def _load_meta(data_dir: Path) -> tuple[dict, dict]:
     return vocab, meta
 
 
+def _compute_metrics(labels: list, probs: list, threshold: float) -> dict:
+    try:
+        auroc = roc_auc_score(labels, probs)
+        auprc = average_precision_score(labels, probs, pos_label=1)
+        preds = [1 if p >= threshold else 0 for p in probs]
+        _, sensitivity, f1, _ = precision_recall_fscore_support(
+            labels, preds, average="binary", pos_label=1, zero_division=0
+        )
+        cm = confusion_matrix(labels, preds, labels=[0, 1])
+        tn, fp = cm[0, 0], cm[0, 1]
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    except ValueError:
+        auroc, auprc, f1, sensitivity, specificity = (float("nan"),) * 5
+    return {
+        "auroc": auroc, "auprc": auprc, "f1": f1,
+        "sensitivity": sensitivity, "specificity": specificity,
+    }
+
+
 @torch.no_grad()
-def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.device,
-             threshold: float = 0.5) -> dict:
+def evaluate(
+    model: nn.Module,
+    loader,
+    criterion: nn.Module,
+    device: torch.device,
+    threshold: float = 0.5,
+) -> dict:
     model.eval()
     total_loss, n = 0.0, 0
-    all_labels, all_probs = [], []
+    all_labels: list   = []
+    all_probs:  list   = []
+    all_task_ids: list = []
 
     for batch in tqdm(loader, desc="  val", unit="batch", leave=False):
         concept_ids  = batch["concept_ids"].to(device)
@@ -96,10 +119,12 @@ def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.devic
         position_ids = batch["position_ids"].to(device)
         age_ids      = batch["age_ids"].to(device)
         labels       = batch["label"].to(device)
-        dates        = batch["dates"].to(device)     if "dates"     in batch else None
+        dates        = batch["dates"].to(device)     if "dates"    in batch else None
         age_years    = batch["age_years"].to(device) if "age_years" in batch else None
+        task_ids     = batch["task_id"].to(device)   if "task_id"  in batch else None
 
-        logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates, age_years)
+        logits = model(concept_ids, type_ids, visit_ids, position_ids,
+                       age_ids, dates, age_years, task_ids)
         loss   = criterion(logits, labels)
 
         total_loss += loss.item() * len(labels)
@@ -107,30 +132,25 @@ def evaluate(model: nn.Module, loader, criterion: nn.Module, device: torch.devic
         probs = torch.softmax(logits, dim=-1)[:, 1].cpu().numpy()
         all_probs.extend(probs.tolist())
         all_labels.extend(labels.cpu().numpy().tolist())
+        if task_ids is not None:
+            all_task_ids.extend(task_ids.cpu().numpy().tolist())
 
     avg_loss = total_loss / n
-    try:
-        auroc = roc_auc_score(all_labels, all_probs)
-        auprc = average_precision_score(all_labels, all_probs, pos_label=1)
-        preds = [1 if p >= threshold else 0 for p in all_probs]
-        _, sensitivity, f1, _ = precision_recall_fscore_support(
-            all_labels, preds, average="binary", pos_label=1, zero_division=0
-        )
-        cm = confusion_matrix(all_labels, preds, labels=[0, 1])
-        tn, fp = cm[0, 0], cm[0, 1]
-        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-    except ValueError:
-        auroc, auprc, f1, sensitivity, specificity = (float("nan"),) * 5
+    overall  = _compute_metrics(all_labels, all_probs, threshold)
 
-    return {
-        "loss":        avg_loss,
-        "auroc":       auroc,
-        "auprc":       auprc,
-        "f1":          f1,
-        "sensitivity": sensitivity,
-        "specificity": specificity,
-        "eval_threshold": threshold,
-    }
+    per_task: dict[str, dict] = {}
+    if all_task_ids:
+        arr_labels   = np.array(all_labels)
+        arr_probs    = np.array(all_probs)
+        arr_task_ids = np.array(all_task_ids)
+        for tid, tname in TASK_WINDOWS.items():
+            mask = arr_task_ids == tid
+            if mask.sum() > 0:
+                per_task[tname] = _compute_metrics(
+                    arr_labels[mask].tolist(), arr_probs[mask].tolist(), threshold
+                )
+
+    return {"loss": avg_loss, **overall, "per_task": per_task, "eval_threshold": threshold}
 
 
 # ── training loop ─────────────────────────────────────────────────────────────
@@ -141,30 +161,32 @@ def train(args: argparse.Namespace | object) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     _set_seed(args.seed)
-
     device = _device(args.device)
-    print(f"Device: {device}")
-    print(f"Seed         : {args.seed}")
+    print(f"Device: {device}  |  Seed: {args.seed}")
 
     vocab, meta = _load_meta(data_dir)
     num_concepts  = len(vocab["concept_vocab"])
     max_seq_len   = meta["max_seq_len"]
     positive_rate = meta["positive_rate"]
+    n_tasks       = meta.get("n_tasks", 3)
 
-    # Class weights to handle label imbalance: w_pos = 1/rate, w_neg = 1/(1-rate)
-    #************ Might need to review this, just in case. 
+    if not meta.get("multitask", False):
+        raise ValueError(
+            f"data_dir {data_dir} was not tokenized with --multitask. "
+            "Re-run tokenize_cli.py --multitask and point --data-dir here."
+        )
+
     class_weights = torch.tensor(
         [1.0 / (1.0 - positive_rate), 1.0 / positive_rate],
         dtype=torch.float32,
         device=device,
     )
-
     print(f"Vocab size   : {num_concepts:,}")
     print(f"Max seq len  : {max_seq_len}")
+    print(f"Tasks        : {n_tasks}  (windows: {meta.get('task_windows', [90,180,365])})")
     print(f"Positive rate: {positive_rate:.1%}  →  class weights {class_weights.tolist()}")
 
-    # Determine safe max_num_visits from the saved tensor
-    visit_ids_all = torch.load(data_dir / "visit_ids.pt", weights_only=True)
+    visit_ids_all  = torch.load(data_dir / "visit_ids.pt", weights_only=True)
     max_num_visits = int(visit_ids_all.max().item()) + 1
     print(f"Max visit id : {max_num_visits - 1}  →  visit embedding size {max_num_visits}")
     del visit_ids_all
@@ -175,41 +197,27 @@ def train(args: argparse.Namespace | object) -> None:
         num_workers=args.num_workers,
         seed=args.seed,
     )
-    print(f"Train batches: {len(train_dl)}  |  Val batches: {len(val_dl)}  |  Test batches: {len(test_dl)}")
+    print(f"Train batches: {len(train_dl)}  |  Val: {len(val_dl)}  |  Test: {len(test_dl)}")
 
-    model_type = getattr(args, "model_type", "transformer")
-    _shared = dict(
+    model = EHR_Encoder(
         num_concepts=num_concepts,
         max_num_visits=max_num_visits,
         d_model=args.d_model,
+        num_heads=args.num_heads,
         num_layers=args.num_layers,
+        ff_dim=args.ff_dim,
         dropout=args.dropout,
         max_seq_len=max_seq_len,
         fusion=getattr(args, "fusion", "add"),
         use_time=getattr(args, "use_time", False),
         use_age=getattr(args, "use_age", False),
-    )
-    if model_type == "transformer":
-        model = EHR_Encoder(
-            **_shared,
-            num_heads=args.num_heads,
-            ff_dim=args.ff_dim,
-        ).to(device)
-    elif model_type in ("lstm", "gru"):
-        model = EHR_LSTM(
-            **_shared,
-            rnn_type=model_type,
-            bidirectional=getattr(args, "bidirectional", True),
-        ).to(device)
-    else:
-        raise ValueError(
-            f"Unknown model_type '{model_type}'. Choose 'transformer', 'lstm', or 'gru'."
-        )
+        num_tasks=n_tasks,
+    ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"Parameters   : {n_params:,}")
 
-    criterion = nn.CrossEntropyLoss(
+    criterion     = nn.CrossEntropyLoss(
         weight=class_weights,
         label_smoothing=getattr(args, "label_smoothing", 0.0),
     )
@@ -224,20 +232,20 @@ def train(args: argparse.Namespace | object) -> None:
     scheduler = torch.optim.lr_scheduler.SequentialLR(
         optimizer, schedulers=[warmup, cosine], milestones=[warmup_epochs],
     )
-    scaler    = GradScaler("cuda", enabled=device.type == "cuda")
+    scaler = GradScaler("cuda", enabled=device.type == "cuda")
 
     if device.type == "cuda":
-        gpu_name = torch.cuda.get_device_name(device)
+        gpu_name  = torch.cuda.get_device_name(device)
         gpu_count = torch.cuda.device_count()
     else:
-        gpu_name = None
-        gpu_count = 0
+        gpu_name, gpu_count = None, 0
 
     config = vars(args) | {
         "num_concepts":   num_concepts,
         "max_seq_len":    max_seq_len,
         "max_num_visits": max_num_visits,
         "n_params":       n_params,
+        "n_tasks":        n_tasks,
         "run_date":       datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "compute_host":   socket.gethostname(),
         "platform":       platform.platform(),
@@ -269,7 +277,7 @@ def train(args: argparse.Namespace | object) -> None:
         model.train()
         train_loss, n = 0.0, 0
 
-        batch_bar = tqdm(train_dl, desc=f"  train", unit="batch", leave=False)
+        batch_bar = tqdm(train_dl, desc="  train", unit="batch", leave=False)
         for batch in batch_bar:
             concept_ids  = batch["concept_ids"].to(device)
             type_ids     = batch["type_ids"].to(device)
@@ -277,12 +285,14 @@ def train(args: argparse.Namespace | object) -> None:
             position_ids = batch["position_ids"].to(device)
             age_ids      = batch["age_ids"].to(device)
             labels       = batch["label"].to(device)
-            dates        = batch["dates"].to(device)     if "dates"     in batch else None
+            dates        = batch["dates"].to(device)     if "dates"    in batch else None
             age_years    = batch["age_years"].to(device) if "age_years" in batch else None
+            task_ids     = batch["task_id"].to(device)   if "task_id"  in batch else None
 
             optimizer.zero_grad()
             with autocast("cuda", enabled=device.type == "cuda"):
-                logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates, age_years)
+                logits = model(concept_ids, type_ids, visit_ids, position_ids,
+                               age_ids, dates, age_years, task_ids)
                 loss   = criterion(logits, labels)
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
@@ -316,11 +326,15 @@ def train(args: argparse.Namespace | object) -> None:
             new     = ",".join(updated) if updated else "—",
         )
 
-        row = {"epoch": epoch, "train_loss": avg_train_loss, **val_metrics, "elapsed": elapsed}
+        row = {"epoch": epoch, "train_loss": avg_train_loss, "elapsed": elapsed,
+               **{k: v for k, v in val_metrics.items() if k != "per_task"}}
+        for tname, tm in val_metrics.get("per_task", {}).items():
+            for metric, val in tm.items():
+                row[f"val_{tname}_{metric}"] = val
         history.append(row)
 
         if args.use_wandb:
-            wandb.log({
+            log_dict = {
                 "train/loss":      avg_train_loss,
                 "val/loss":        val_metrics["loss"],
                 "val/auroc":       val_metrics["auroc"],
@@ -330,9 +344,13 @@ def train(args: argparse.Namespace | object) -> None:
                 "val/specificity": val_metrics["specificity"],
                 "lr":              scheduler.get_last_lr()[0],
                 "epoch":           epoch,
-            })
+            }
+            for tname, tm in val_metrics.get("per_task", {}).items():
+                for metric, val in tm.items():
+                    log_dict[f"val_{tname}/{metric}"] = val
+            wandb.log(log_dict)
 
-    print("\nBest validation scores:")
+    print("\nBest validation scores (overall):")
     col_w = max(len(m) for m in CKPT_METRICS)
     for m in CKPT_METRICS:
         print(f"  {m:<{col_w}}  {best_scores[m]:.4f}  (epoch {best_epochs[m]})")
@@ -353,17 +371,25 @@ def train(args: argparse.Namespace | object) -> None:
         )
         tm = evaluate(model, test_dl, criterion, device,
                       threshold=getattr(args, "eval_threshold", 0.5))
-        all_test_metrics[m] = tm
+        all_test_metrics[m] = {k: v for k, v in tm.items() if k != "per_task"}
+        all_test_metrics[m]["per_task"] = tm.get("per_task", {})
+
         with open(output_dir / f"test_metrics_{m}.json", "w") as f:
-            json.dump(tm, f, indent=2)
+            json.dump(all_test_metrics[m], f, indent=2)
         row_str = "".join(f"  {tm[h]:>8.4f}" for h in header_metrics)
         print(f"  {m:<12}{row_str}")
+
+        # Print per-task breakdown for the AUROC checkpoint
+        if m == "auroc" and tm.get("per_task"):
+            print("\n  Per-task breakdown (AUROC checkpoint):")
+            for tname, task_m in tm["per_task"].items():
+                task_str = "  ".join(f"{k}={task_m[k]:.4f}" for k in ["auroc", "auprc", "f1"])
+                print(f"    {tname}: {task_str}")
 
         if args.use_wandb:
             wandb.log({f"test_{m}_ckpt/{k}": v for k, v in tm.items()
                        if isinstance(v, (int, float))})
 
-    # test_metrics.json = auroc checkpoint for backward compat
     with open(output_dir / "test_metrics.json", "w") as f:
         json.dump(all_test_metrics["auroc"], f, indent=2)
 
@@ -379,47 +405,34 @@ def train(args: argparse.Namespace | object) -> None:
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Train EHR_Encoder for cardiotoxicity prediction.",
+        description="Multi-task EHR_Encoder training (90d / 180d / 365d cardiotoxicity).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--data-dir",     default="tokenization_outputs/ver1",
-                   help="Path to tokenization_outputs/<name>/")
-    p.add_argument("--output-dir",   default="model_outputs/run1",
+    p.add_argument("--data-dir",     required=True,
+                   help="Path to a multitask tokenization_outputs/<name>/ (must have task_ids.pt).")
+    p.add_argument("--output-dir",   default="model_outputs/multitask_run1",
                    help="Where to save checkpoints and logs.")
-    p.add_argument("--model-type",   default="transformer",
-                   choices=["transformer", "lstm", "gru"], dest="model_type",
-                   help="Model architecture to train.")
-    p.add_argument("--epochs",       type=int,   default=20)
-    p.add_argument("--batch-size",   type=int,   default=32)
+    p.add_argument("--epochs",       type=int,   default=200)
+    p.add_argument("--batch-size",   type=int,   default=64)
     p.add_argument("--lr",           type=float, default=1e-4)
-    p.add_argument("--weight-decay", type=float, default=1e-2)
-    p.add_argument("--d-model",      type=int,   default=128)
+    p.add_argument("--weight-decay", type=float, default=5e-2)
+    p.add_argument("--d-model",      type=int,   default=96)
     p.add_argument("--num-heads",    type=int,   default=4)
-    p.add_argument("--num-layers",   type=int,   default=4)
-    p.add_argument("--ff-dim",       type=int,   default=512)
-    p.add_argument("--dropout",      type=float, default=0.1)
+    p.add_argument("--num-layers",   type=int,   default=1)
+    p.add_argument("--ff-dim",       type=int,   default=192)
+    p.add_argument("--dropout",      type=float, default=0.5)
     p.add_argument("--num-workers",  type=int,   default=0)
-    p.add_argument("--device",       default="auto",
-                   help="'auto', 'cpu', 'cuda', or 'mps'.")
-    p.add_argument("--seed",          type=int,   default=42)
-    p.add_argument("--use-wandb",          action="store_true", dest="use_wandb",
-                   help="Enable Weights & Biases logging.")
+    p.add_argument("--device",       default="auto")
+    p.add_argument("--seed",         type=int,   default=42)
+    p.add_argument("--use-wandb",          action="store_true", dest="use_wandb")
     p.add_argument("--wandb-project",      default="mimic-cardio-oncology", dest="wandb_project")
-    p.add_argument("--run-name",           default=None, dest="run_name",
-                   help="W&B run name (defaults to auto-generated).")
-    p.add_argument("--label-smoothing", type=float, default=0.0, dest="label_smoothing",
-                   help="Label smoothing for CrossEntropyLoss (0 = off, 0.1 recommended for small datasets).")
-    p.add_argument("--fusion",    default="add", choices=["add", "concat"],
-                   help="'add': BEHRT-style element-wise sum. 'concat': CEHR-BERT concat→Linear→GELU.")
-    p.add_argument("--use-time", action="store_true", dest="use_time",
-                   help="Add sinusoidal time-gap embedding per token (requires dates.pt).")
-    p.add_argument("--use-age",  action="store_true", dest="use_age",
-                   help="Add continuous-age sinusoidal embedding (requires age_years.pt).")
-    p.add_argument("--warmup-frac", type=float, default=0.1, dest="warmup_frac",
-                   help="Fraction of epochs used for linear LR warmup (default 0.1).")
-    p.add_argument("--eval-threshold", type=float, default=0.5, dest="eval_threshold",
-                   help="Decision threshold used when logging sensitivity/specificity/F1 during training.")
-
+    p.add_argument("--run-name",           default=None, dest="run_name")
+    p.add_argument("--label-smoothing",    type=float, default=0.1, dest="label_smoothing")
+    p.add_argument("--fusion",    default="add", choices=["add", "concat"])
+    p.add_argument("--use-time", action="store_true", dest="use_time")
+    p.add_argument("--use-age",  action="store_true", dest="use_age")
+    p.add_argument("--warmup-frac",     type=float, default=0.1, dest="warmup_frac")
+    p.add_argument("--eval-threshold",  type=float, default=0.5, dest="eval_threshold")
     return p.parse_args()
 
 

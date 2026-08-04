@@ -128,6 +128,7 @@ class EHR_Encoder(nn.Module):
         use_time:            bool  = False,
         use_age:             bool  = False,
         time_scaling_factor: float = 365.25,
+        num_tasks:           int   = 0,
     ) -> None:
         super().__init__()
 
@@ -148,9 +149,16 @@ class EHR_Encoder(nn.Module):
             for _ in range(num_layers)
         ])
 
-        self.norm         = nn.LayerNorm(d_model)   # final norm (required after pre-norm stack)
-        self.cls_dropout  = nn.Dropout(dropout)
-        self.classifier   = nn.Linear(d_model, num_classes)
+        self.norm        = nn.LayerNorm(d_model)   # final norm (required after pre-norm stack)
+        self.cls_dropout = nn.Dropout(dropout)
+        self.classifier  = nn.Linear(d_model, num_classes)
+
+        # Task token for multi-task prompt finetuning (num_tasks=0 disables this).
+        # When enabled, a learned task embedding is prepended before [CLS] and the
+        # model pools from that position, conditioning the representation on the
+        # prediction window (90d / 180d / 365d).
+        self.num_tasks  = num_tasks
+        self.task_embed = nn.Embedding(num_tasks, d_model) if num_tasks > 0 else None
 
     def forward(
         self,
@@ -161,6 +169,7 @@ class EHR_Encoder(nn.Module):
         age_ids:      torch.Tensor,
         dates:        torch.Tensor | None = None,
         age_years:    torch.Tensor | None = None,
+        task_ids:     torch.Tensor | None = None,
         return_attention: bool = False,
     ) -> torch.Tensor | tuple[torch.Tensor, list[torch.Tensor]]:
         x = self.embedding(
@@ -169,6 +178,12 @@ class EHR_Encoder(nn.Module):
         )
 
         padding_mask = (concept_ids != 0).long()
+
+        if task_ids is not None and self.task_embed is not None:
+            task_tok  = self.task_embed(task_ids).unsqueeze(1)   # (B, 1, d_model)
+            x         = torch.cat([task_tok, x], dim=1)          # (B, S+1, d_model)
+            task_mask = torch.ones(x.size(0), 1, dtype=padding_mask.dtype, device=padding_mask.device)
+            padding_mask = torch.cat([task_mask, padding_mask], dim=1)
 
         all_attn: list[torch.Tensor] = []
         for layer in self.layers:
@@ -196,17 +211,20 @@ if __name__ == "__main__":
     dates        = torch.randint(0, 9000, (B, S))
     age_years    = torch.FloatTensor([62.0, 47.5])
 
+    task_ids = torch.randint(0, 3, (B,))
     cases = [
-        ("A0 add",            dict(fusion="add",    use_time=False, use_age=False), None,  None),
-        ("A1 add+time",       dict(fusion="add",    use_time=True,  use_age=False), dates, None),
-        ("A2 add+age",        dict(fusion="add",    use_time=False, use_age=True),  None,  age_years),
-        ("A3 add+time+age",   dict(fusion="add",    use_time=True,  use_age=True),  dates, age_years),
-        ("B0 concat",         dict(fusion="concat", use_time=False, use_age=False), None,  None),
-        ("B1 concat+time",    dict(fusion="concat", use_time=True,  use_age=False), dates, None),
-        ("B2 concat+time+age",dict(fusion="concat", use_time=True,  use_age=True),  dates, age_years),
+        ("A0 add",            dict(fusion="add",    use_time=False, use_age=False, num_tasks=0), None,  None,      None),
+        ("A1 add+time",       dict(fusion="add",    use_time=True,  use_age=False, num_tasks=0), dates, None,      None),
+        ("A2 add+age",        dict(fusion="add",    use_time=False, use_age=True,  num_tasks=0), None,  age_years, None),
+        ("A3 add+time+age",   dict(fusion="add",    use_time=True,  use_age=True,  num_tasks=0), dates, age_years, None),
+        ("B0 concat",         dict(fusion="concat", use_time=False, use_age=False, num_tasks=0), None,  None,      None),
+        ("B1 concat+time",    dict(fusion="concat", use_time=True,  use_age=False, num_tasks=0), dates, None,      None),
+        ("B2 concat+time+age",dict(fusion="concat", use_time=True,  use_age=True,  num_tasks=0), dates, age_years, None),
+        ("MT add+tasks",      dict(fusion="add",    use_time=False, use_age=False, num_tasks=3), None,  None,      task_ids),
+        ("MT add+time+tasks", dict(fusion="add",    use_time=True,  use_age=False, num_tasks=3), dates, None,      task_ids),
     ]
-    for name, kwargs, d, a in cases:
+    for name, kwargs, d, a, t in cases:
         m = EHR_Encoder(num_concepts=V, **kwargs)
-        out = m(concept_ids, type_ids, visit_ids, position_ids, age_ids, d, a)
+        out = m(concept_ids, type_ids, visit_ids, position_ids, age_ids, d, a, t)
         print(f"{name:<25}: {out.shape}")
     print("ehr_encoder.py OK")

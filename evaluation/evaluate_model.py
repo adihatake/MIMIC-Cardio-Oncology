@@ -64,10 +64,13 @@ def _load_data(data_dir: Path, seed: int):
     }
     dates_path     = data_dir / "dates.pt"
     age_years_path = data_dir / "age_years.pt"
+    task_ids_path  = data_dir / "task_ids.pt"
     if dates_path.exists():
         tensors["dates"]     = torch.load(dates_path,     weights_only=True)
     if age_years_path.exists():
         tensors["age_years"] = torch.load(age_years_path, weights_only=True)
+    if task_ids_path.exists():
+        tensors["task_ids"]  = torch.load(task_ids_path,  weights_only=True)
 
     return row_indices, samples_meta, tensors
 
@@ -89,9 +92,10 @@ def _load_model(
         ff_dim         = cfg["ff_dim"],
         dropout        = cfg.get("dropout", 0.1),
         max_seq_len    = cfg["max_seq_len"],
-        fusion   = cfg.get("fusion",   "add"),
-        use_time = cfg.get("use_time", False),
-        use_age  = cfg.get("use_age",  False),
+        fusion    = cfg.get("fusion",    "add"),
+        use_time  = cfg.get("use_time",  False),
+        use_age   = cfg.get("use_age",   False),
+        num_tasks = cfg.get("num_tasks", 0),
     ).to(device)
 
     # prefer best_model_{metric}.pt; fall back to best_model.pt for older runs
@@ -127,8 +131,9 @@ def _run_inference(
         labels       = tensors["labels"][rows]
         dates        = tensors["dates"][rows].to(device)     if "dates"     in tensors else None
         age_years    = tensors["age_years"][rows].to(device) if "age_years" in tensors else None
+        task_ids     = tensors["task_ids"][rows].to(device)  if "task_ids"  in tensors else None
 
-        logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates, age_years)
+        logits = model(concept_ids, type_ids, visit_ids, position_ids, age_ids, dates, age_years, task_ids)
         probs  = F.softmax(logits, dim=-1)[:, 1].cpu().tolist()
 
         all_probs.extend(probs)

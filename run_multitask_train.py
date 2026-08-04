@@ -1,59 +1,41 @@
 """
-run_train.py
+run_multitask_train.py
 
-Architecture sweep: arch_s_plus_wide and arch_s_plus_deep
-across all 4 dataset variants × 5 seeds (pan_cancer_uniform_365 cohort).
+Architecture sweep for multi-task cardiotoxicity prediction at 90 / 180 / 365 days.
 
-Architectures:
-    arch_s_plus_wide  d_model=96,  heads=4, layers=1, ff=192  — wider, same depth as arch_s
-    arch_s_plus_deep  d_model=64,  heads=4, layers=2, ff=256  — deeper, same width as arch_s
+Before running this script, produce the multi-task tokenization:
+
+    python tokenization_src/tokenize_cli.py \\
+        --cohort pan_cancer_uniform_365_v1 \\
+        --name <output_name> \\
+        --multitask \\
+        --all
+
+Then point DATASETS below to those tokenization output directories.
 
 Output layout:
-    experiment_outputs/arch_s_plus/
+    experiment_outputs/multitask/
         arch_s_plus_wide/
             all_labs/seed42/  seed52/  ...
             cardiac_labs/...
-            bucketed_all_labs/...
-            bucketed_cardiac_labs/...
         arch_s_plus_deep/
-            all_labs/seed42/  ...
             ...
 
-Plot the dataset comparison per arch:
-    # wide arch
-    python evaluation/plot_history.py \
-        --model-dir experiment_outputs/arch_s_plus/arch_s_plus_wide/all_labs \
-                    experiment_outputs/arch_s_plus/arch_s_plus_wide/cardiac_labs \
-                    experiment_outputs/arch_s_plus/arch_s_plus_wide/bucketed_all_labs \
-                    experiment_outputs/arch_s_plus/arch_s_plus_wide/bucketed_cardiac_labs \
-        --save experiment_outputs/arch_s_plus/arch_s_plus_wide/dataset_comparison.png
-
-    # deep arch
-    python evaluation/plot_history.py \
-        --model-dir experiment_outputs/arch_s_plus/arch_s_plus_deep/all_labs \
-                    experiment_outputs/arch_s_plus/arch_s_plus_deep/cardiac_labs \
-                    experiment_outputs/arch_s_plus/arch_s_plus_deep/bucketed_all_labs \
-                    experiment_outputs/arch_s_plus/arch_s_plus_deep/bucketed_cardiac_labs \
-        --save experiment_outputs/arch_s_plus/arch_s_plus_deep/dataset_comparison.png
-
 Run:
-    python run_train.py
+    python run_multitask_train.py
 """
 
 from pathlib import Path
 
 from configs import TrainConfig
-import model_src.train as train_module
+import model_src.multitask_train as train_module
 
 # ── output root ───────────────────────────────────────────────────────────────
-OUT_ROOT = Path("experiment_outputs/August1/arch_s_plus")
+OUT_ROOT = Path("experiment_outputs/multitask/arch_s_plus")
 
 # ── architectures ─────────────────────────────────────────────────────────────
-# Tests increased width without increasing depth.
-_ARCH_S_PLUS_WIDE = dict(d_model=96,  num_heads=4, num_layers=1, ff_dim=192)
-
-# Tests increased depth while retaining the smaller embedding dimension.
-_ARCH_S_PLUS_DEEP = dict(d_model=64,  num_heads=4, num_layers=2, ff_dim=256)
+_ARCH_S_PLUS_WIDE = dict(d_model=96, num_heads=4, num_layers=1, ff_dim=192)
+_ARCH_S_PLUS_DEEP = dict(d_model=64, num_heads=4, num_layers=2, ff_dim=256)
 
 ARCHS = [
     ("arch_s_plus_wide", _ARCH_S_PLUS_WIDE),
@@ -75,16 +57,17 @@ _BASE = dict(
     device          = "auto",
     num_workers     = 0,
     use_wandb       = False,
+    num_tasks       = 3,
 )
 
 # ── sweep axes ────────────────────────────────────────────────────────────────
 SEEDS = [42, 52, 62, 72, 82]
 
+# Point these to tokenization outputs produced with --multitask.
+# Replace the directory names below with your actual multitask tokenization names.
 DATASETS = [
-    ("all_labs",              "Jul31_pan_cancer_uniform_365_v1_all_labs"),
-    ("cardiac_labs",          "Jul31_pan_cancer_uniform_365_v1_cardiac_labs"),
-    ("bucketed_all_labs",     "Jul31_pan_cancer_uniform_365_v1_bucketed_all_labs"),
-    ("bucketed_cardiac_labs", "Jul31_pan_cancer_uniform_365_v1_bucketed_cardiac_labs"),
+    ("all_labs",     "mt_pan_cancer_uniform_365_v1_all_labs"),
+    ("cardiac_labs", "mt_pan_cancer_uniform_365_v1_cardiac_labs"),
 ]
 
 # ── build run list ─────────────────────────────────────────────────────────────
@@ -95,7 +78,7 @@ RUNS = [
         data_dir   = Path("tokenization_outputs") / tok_dir,
         seed       = s,
         output_dir = OUT_ROOT / arch_name / dataset_id / f"seed{s}",
-        run_name   = f"{arch_name}-{dataset_id}-seed{s}",
+        run_name   = f"mt-{arch_name}-{dataset_id}-seed{s}",
     )
     for arch_name, arch_kwargs in ARCHS
     for dataset_id, tok_dir in DATASETS
@@ -116,6 +99,7 @@ if __name__ == "__main__":
         print(f"  data   : {cfg.data_dir.name}")
         print(f"  seed   : {cfg.seed}")
         print(f"  arch   : d_model={cfg.d_model}, heads={cfg.num_heads}, layers={cfg.num_layers}, ff={cfg.ff_dim}")
+        print(f"  tasks  : {cfg.num_tasks}")
         print(f"{'=' * 60}")
         cfg.save(cfg.output_dir / "config.json")
         train_module.train(cfg)
