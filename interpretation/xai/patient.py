@@ -356,11 +356,13 @@ def plot_attention_heads_per_cycle(
     cycle_data: list[dict],
     subject_id: int,
     output_dir: Path,
-    top_k: int = 15,
+    top_k: int = 30,
 ) -> None:
     """
-    For each cycle, produce a grid of bar charts (n_layers × n_heads) showing
-    CLS attention over the top_k tokens with highest mean attention.
+    For each cycle, produce a grid of attention-matrix heatmaps (n_layers × n_heads).
+    Each cell shows the raw (top_k × top_k) attention matrix for that head, where
+    tokens are selected by highest mean CLS attention across all heads/layers.
+    Rows = query tokens, columns = key tokens.
     Saved to output_dir/cycle_{N}.png.
     """
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -371,57 +373,66 @@ def plot_attention_heads_per_cycle(
         if n_layers == 0:
             continue
         n_heads    = all_attn[0].shape[0]
-        raw_tokens = cd["raw_tokens"]   # already without CLS
+        n_active   = all_attn[0].shape[-1]
+        # Index 0 in all_attn matrices = CLS; raw_tokens has CLS stripped,
+        # so content token j in raw_tokens → matrix column/row (j+1).
 
-        # Mean CLS attention across heads and layers to select top_k tokens
-        mean_cls = np.zeros(len(raw_tokens))
+        # Select top_k content tokens by mean CLS-row attention across heads/layers
+        mean_cls = np.zeros(n_active - 1)   # exclude CLS self
         for layer_attn in all_attn:
-            cls_row = layer_attn[:, 0, :]   # (n_heads, n_active); col 0 = CLS self-attn
-            n_tok   = cls_row.shape[-1]
-            content = cls_row[:, 1:min(n_tok, len(raw_tokens) + 1)]  # skip CLS col
-            mean_cls[:content.shape[1]] += content.mean(axis=0)
+            mean_cls += layer_attn[:, 0, 1:].mean(axis=0)   # mean over heads
         mean_cls /= max(n_layers, 1)
 
-        k        = min(top_k, len(raw_tokens))
-        top_idx  = np.argsort(mean_cls)[::-1][:k]
-        top_lbls = [cd["token_labels"][i].split(" [V")[0] for i in top_idx]
+        k       = min(top_k, n_active - 1)
+        top_idx = np.argsort(mean_cls)[::-1][:k]   # indices into raw_tokens
+        # Matrix indices (include CLS at 0): [0] + [i+1 for i in top_idx]
+        mat_idx = np.array([0] + [i + 1 for i in top_idx])
 
+        # Short display labels: CLS + truncated token labels
+        raw_tokens = cd["raw_tokens"]
+        tick_lbls  = ["CLS"] + [
+            cd["token_labels"][i].split(" [V")[0][:18] for i in top_idx
+        ]
+
+        cell_size = 0.38
         fig, axes = plt.subplots(
             n_layers, n_heads,
-            figsize=(2.5 * n_heads, 1.8 * n_layers),
+            figsize=(cell_size * (k + 1) * n_heads + 0.5,
+                     cell_size * (k + 1) * n_layers + 0.8),
             squeeze=False,
         )
 
         for li, layer_attn in enumerate(all_attn):
             for hi in range(n_heads):
-                ax      = axes[li][hi]
-                cls_row = layer_attn[hi, 0, :]   # (n_active,)
-                vals    = np.array([
-                    cls_row[i + 1] if (i + 1) < len(cls_row) else 0.0
-                    for i in top_idx
-                ])
-                bar_colors = [
-                    EVENT_TYPE_COLORS.get(_event_type(raw_tokens[i]), "#999999")
-                    for i in top_idx[::-1]
-                ]
-                ax.barh(range(k), vals[::-1], color=bar_colors,
-                        edgecolor="white", linewidth=0.3)
-                ax.invert_yaxis()
+                ax  = axes[li][hi]
+                mat = layer_attn[hi][np.ix_(mat_idx, mat_idx)]   # (k+1, k+1)
+                im  = ax.imshow(mat, aspect="auto", cmap="Blues",
+                                vmin=0, vmax=mat.max() or 1e-6,
+                                interpolation="nearest")
+
+                ax.set_title(f"L{li+1}H{hi+1}", fontsize=6, pad=2)
+
+                # Labels only on outermost subplots to avoid clutter
                 if hi == 0:
-                    ax.set_yticks(range(k))
-                    ax.set_yticklabels(top_lbls[::-1], fontsize=5)
+                    ax.set_yticks(range(k + 1))
+                    ax.set_yticklabels(tick_lbls, fontsize=4)
                 else:
                     ax.set_yticks([])
-                ax.tick_params(axis="x", labelsize=5)
-                ax.set_title(f"L{li+1}H{hi+1}", fontsize=6, pad=2)
+                if li == n_layers - 1:
+                    ax.set_xticks(range(k + 1))
+                    ax.set_xticklabels(tick_lbls, fontsize=4,
+                                       rotation=90, ha="right")
+                else:
+                    ax.set_xticks([])
 
         lbl_str = "tox" if cd["label"] else "neg"
         fig.suptitle(
-            f"Attention Heads — Patient {subject_id}  "
-            f"Cycle {cd['cycle_number']}  P={cd['prob']:.2f}  ({lbl_str})",
+            f"Attention Matrices — Patient {subject_id}  "
+            f"Cycle {cd['cycle_number']}  P={cd['prob']:.2f}  ({lbl_str})  "
+            f"[top {k} tokens by CLS attn]",
             fontsize=9,
         )
-        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        fig.tight_layout(rect=[0, 0, 1, 0.97])
         out = output_dir / f"cycle_{cd['cycle_number']}.png"
         fig.savefig(out, dpi=130, bbox_inches="tight")
         plt.close(fig)
