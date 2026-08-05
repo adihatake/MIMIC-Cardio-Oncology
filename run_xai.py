@@ -240,7 +240,6 @@ def run_patient_level(subject_id: int, patient_cls: torch.Tensor,
         cycle_data = cycle_data,
         subject_id = subject_id,
         output_dir = pat_out / "attention_heads",
-        top_k      = ROLLOUT_TOP_K,
     )
 
     print(f"  Generating per-cycle rollout charts...")

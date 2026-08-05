@@ -72,7 +72,7 @@ CLINICAL_COLS = [
     "exposed_proteasome_inhibitor",
     "exposed_immunomodulatory_agent",
     # clinical context
-    "pre_existing_cv_history",
+    "has_pre_existing_hf_or_cmp",
     "baseline_lvef",
     # cycle metadata
     "cycle_number",
