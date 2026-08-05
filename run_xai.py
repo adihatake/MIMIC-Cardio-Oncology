@@ -78,7 +78,6 @@ COHORT_TABLE_PATH = None  # e.g. Path("cohort_outputs/cycle_modeling_v4/final_cy
 
 # ── Population IG settings ────────────────────────────────────────
 RUN_POPULATION_IG   = True
-MAX_IG_SAMPLES      = 50    # randomly sub-sampled from DATASET_SPLIT
 IG_STEPS_POPULATION = 30    # fewer steps = faster; 30 is usually sufficient
 POP_IG_TOP_K        = 25    # features shown in the population IG plot
 
@@ -161,21 +160,20 @@ def run_dataset_level(model, samples_df, tensors, inv_vocab, split_indices, devi
         print(f"\nPopulation IG  (max {MAX_IG_SAMPLES} samples, "
               f"{IG_STEPS_POPULATION} steps)...")
         ig_df = xai.compute_population_ig(
-            model       = model,
-            tensors     = tensors,
-            inv_vocab   = inv_vocab,
-            indices     = indices,
-            device      = device,
-            ig_steps    = IG_STEPS_POPULATION,
-            max_samples = MAX_IG_SAMPLES,
-            cache_path  = ds_out / "population_ig_cache.csv",
+            model      = model,
+            tensors    = tensors,
+            inv_vocab  = inv_vocab,
+            indices    = indices,
+            device     = device,
+            ig_steps   = IG_STEPS_POPULATION,
+            cache_path = ds_out / "population_ig_cache.csv",
         )
         xai.plot_population_ig(
             ig_df        = ig_df,
             output_path  = ds_out / "population_ig.png",
             top_k        = POP_IG_TOP_K,
             split_filter = DATASET_SPLIT,
-            n_samples    = min(MAX_IG_SAMPLES, len(indices)),
+            n_samples    = len(indices),
         )
 
     return embeddings, labels_arr
@@ -237,6 +235,31 @@ def run_patient_level(subject_id: int, patient_cls: torch.Tensor,
         output_path = pat_out / "rollout_heatmap.png",
         top_k       = ROLLOUT_TOP_K,
     )
+
+    print(f"  Generating per-cycle attention heads...")
+    xai.plot_attention_heads_per_cycle(
+        cycle_data = cycle_data,
+        subject_id = subject_id,
+        output_dir = pat_out / "attention_heads",
+        top_k      = ROLLOUT_TOP_K,
+    )
+
+    print(f"  Generating per-cycle rollout charts...")
+    xai.plot_rollout_cycles_separate(
+        cycle_data = cycle_data,
+        subject_id = subject_id,
+        output_dir = pat_out / "rollout",
+        top_k      = ROLLOUT_TOP_K,
+    )
+
+    if RUN_PATIENT_IG:
+        print(f"  Generating per-cycle IG charts...")
+        xai.plot_ig_cycles_separate(
+            cycle_data = cycle_data,
+            subject_id = subject_id,
+            output_dir = pat_out / "ig",
+            top_k      = ROLLOUT_TOP_K,
+        )
 
     if PERTURBATION_SPECS:
         print(f"\n  Running {len(PERTURBATION_SPECS)} perturbation(s)...")

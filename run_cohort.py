@@ -33,7 +33,7 @@ REPO_ROOT = Path(__file__).resolve().parent
 
 # ── configure here ────────────────────────────────────────────────────────────
 PIPELINE    = "pan_cancer_uniform_365"   # see options above
-OUTPUT_NAME = "pan_cancer_uniform_365_v1"
+OUTPUT_NAME = "presentation_test"
 
 # Override SQL dirs only when pointing at a non-default version subdirectory
 # (e.g. "jul28_alt" instead of the canonical "hf_cardiotox" folder).

@@ -64,19 +64,43 @@ PATIENT_OVERLAY_COLORS: list[str] = [
     "#7f7f7f",  # gray
 ]
 
-# Tab10 palette — designed for maximum categorical discriminability
+# Fine-grained colours (one per SQL class — kept for reference / future use)
 DRUG_CLASS_COLORS: dict[str, str] = {
-    "anthracycline":               "#d62728",  # red
-    "immune_checkpoint_inhibitor": "#1f77b4",  # blue
-    "her2_targeted":               "#2ca02c",  # green
-    "taxane":                      "#9467bd",  # purple
-    "fluoropyrimidine":            "#ff7f0e",  # orange
-    "vegf_inhibitor":              "#17becf",  # cyan
-    "egfr_inhibitor":              "#e377c2",  # pink
-    "tyrosine_kinase_inhibitor":   "#8c564b",  # brown
-    "proteasome_inhibitor":        "#bcbd22",  # olive
-    "immunomodulatory_agent":      "#7f7f7f",  # gray
-    "other_oncology":              "#c5b0d5",  # light purple
+    "anthracycline":               "#d62728",
+    "immune_checkpoint_inhibitor": "#1f77b4",
+    "her2_targeted":               "#2ca02c",
+    "taxane":                      "#9467bd",
+    "fluoropyrimidine":            "#ff7f0e",
+    "vegf_inhibitor":              "#17becf",
+    "egfr_inhibitor":              "#e377c2",
+    "tyrosine_kinase_inhibitor":   "#8c564b",
+    "proteasome_inhibitor":        "#bcbd22",
+    "immunomodulatory_agent":      "#7f7f7f",
+}
+
+# Collapsed bins matching the pan_cancer_uniform_365 SQL classification.
+# VEGF/EGFR/TKI/proteasome/IMiD are grouped as "Other targeted" to keep
+# the legend readable (6 entries instead of 10).
+DRUG_CLASS_GROUP_MAP: dict[str, str] = {
+    "anthracycline":               "Anthracycline",
+    "her2_targeted":               "HER2-targeted",
+    "immune_checkpoint_inhibitor": "Immune checkpoint inhibitor",
+    "taxane":                      "Taxane",
+    "fluoropyrimidine":            "Antimetabolite",
+    "vegf_inhibitor":              "Other targeted",
+    "egfr_inhibitor":              "Other targeted",
+    "tyrosine_kinase_inhibitor":   "Other targeted",
+    "proteasome_inhibitor":        "Other targeted",
+    "immunomodulatory_agent":      "Other targeted",
+}
+
+DRUG_CLASS_GROUP_COLORS: dict[str, str] = {
+    "Anthracycline":                "#d62728",  # red
+    "HER2-targeted":                "#2ca02c",  # green
+    "Immune checkpoint inhibitor":  "#1f77b4",  # blue
+    "Taxane":                       "#9467bd",  # purple
+    "Antimetabolite":               "#ff7f0e",  # orange
+    "Other targeted":               "#7f7f7f",  # gray
 }
 
 

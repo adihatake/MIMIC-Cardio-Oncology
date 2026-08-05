@@ -17,6 +17,9 @@ from .utils import (
     LABEL_NAMES,
     PERTURB_COLORS,
     DRUG_CLASS_COLORS,
+    DRUG_CLASS_GROUP_MAP,
+    DRUG_CLASS_GROUP_COLORS,
+    PATIENT_OVERLAY_COLORS,
     load_vocab,
     load_samples_df,
     load_setup,
@@ -43,6 +46,9 @@ from .patient import (
     plot_cls_trajectory,
     plot_rollout_per_cycle,
     plot_rollout_heatmap,
+    plot_attention_heads_per_cycle,
+    plot_rollout_cycles_separate,
+    plot_ig_cycles_separate,
 )
 
 from .perturbation import (
@@ -55,7 +61,8 @@ from .perturbation import (
 __all__ = [
     # utils
     "LAB_NAMES", "EVENT_TYPE_COLORS", "LABEL_COLORS", "LABEL_NAMES", "PERTURB_COLORS",
-    "DRUG_CLASS_COLORS", "PATIENT_OVERLAY_COLORS",
+    "DRUG_CLASS_COLORS", "DRUG_CLASS_GROUP_MAP", "DRUG_CLASS_GROUP_COLORS",
+    "PATIENT_OVERLAY_COLORS",
     "load_vocab", "load_samples_df", "load_setup", "get_indices", "find_patient_indices",
     "enrich_samples_with_drug_info",
     # embeddings
@@ -65,6 +72,7 @@ __all__ = [
     # patient
     "get_patient_cycle_data", "plot_cls_trajectory",
     "plot_rollout_per_cycle", "plot_rollout_heatmap",
+    "plot_attention_heads_per_cycle", "plot_rollout_cycles_separate", "plot_ig_cycles_separate",
     # perturbation
     "apply_perturbation", "run_perturbation_analysis",
     "plot_perturbation_trajectory", "plot_perturbation_delta",

@@ -50,6 +50,7 @@ def get_patient_cycle_data(
     Returns one dict per cycle with keys:
       idx, cycle_number, label, prob, cls_embedding,
       raw_tokens, token_labels, rollout, n_active,
+      all_attn   list of (n_heads, n_active, n_active) arrays, one per layer
       ig_l2, ig_signed  (None when skip_ig=True)
     """
     results: list[dict] = []
@@ -97,6 +98,12 @@ def get_patient_cycle_data(
         )
         rollout_content = rollout[:n_active].cpu()[1:]   # skip CLS
 
+        # Trim attention tensors to active tokens (remove batch dim)
+        all_attn_np = [
+            a[0, :, :n_active, :n_active].cpu().numpy()
+            for a in all_attn
+        ]
+
         # Integrated Gradients (optional)
         ig_l2, ig_signed = None, None
         if not skip_ig:
@@ -110,17 +117,18 @@ def get_patient_cycle_data(
                 print(f"  IG failed for idx={idx}: {e}")
 
         results.append({
-            "idx":          idx,
-            "cycle_number": int(row["cycle_number"]),
-            "label":        int(tensors["labels"][idx].item()),
-            "prob":         prob,
+            "idx":           idx,
+            "cycle_number":  int(row["cycle_number"]),
+            "label":         int(tensors["labels"][idx].item()),
+            "prob":          prob,
             "cls_embedding": cls_emb,
-            "raw_tokens":   raw_tokens[1:],     # skip CLS
-            "token_labels": token_labels[1:],
-            "rollout":      rollout_content,
-            "n_active":     n_active,
-            "ig_l2":        ig_l2,
-            "ig_signed":    ig_signed,
+            "raw_tokens":    raw_tokens[1:],    # skip CLS
+            "token_labels":  token_labels[1:],
+            "rollout":       rollout_content,
+            "n_active":      n_active,
+            "all_attn":      all_attn_np,
+            "ig_l2":         ig_l2,
+            "ig_signed":     ig_signed,
         })
 
     return results
@@ -172,8 +180,6 @@ def plot_cls_trajectory(
     ):
         ax.scatter(coord[0], coord[1], c=[palette[i]], s=160, zorder=4,
                    edgecolors=LABEL_COLORS.get(lbl, "#888888"), linewidths=2.0)
-        ax.annotate(f"  Cycle {cyc}", xy=(coord[0], coord[1]),
-                    fontsize=8.5, color="#111111", ha="left", va="bottom", zorder=5)
 
     ax.set_xlabel(f"{method_name} dim 1", fontsize=10)
     ax.set_ylabel(f"{method_name} dim 2", fontsize=10)
@@ -256,27 +262,16 @@ def plot_rollout_per_cycle(
         ax.barh(range(len(sorted_tokens)), scores, color=colors,
                 edgecolor="white", linewidth=0.4)
         ax.invert_yaxis()
-        ax.set_title(f"Cycle {cd['cycle_number']}", fontsize=9)
+        lbl_str = "tox" if cd["label"] else "neg"
+        ax.set_title(
+            f"Cycle {cd['cycle_number']}\nP={cd['prob']:.2f}  ({lbl_str})",
+            fontsize=9,
+        )
         ax.set_xlabel("Rollout relevance", fontsize=8)
         if ci == 0:
             ax.set_yticks(range(len(sorted_labels)))
             ax.set_yticklabels(sorted_labels, fontsize=7)
         ax.tick_params(axis="x", labelsize=7)
-
-    palette = plt.cm.plasma(np.linspace(0.15, 0.85, max(n_cycles, 2)))
-    cycle_handles = [
-        Line2D([0], [0], marker="o", color="w", markerfacecolor=palette[i],
-               markersize=7,
-               label=f"Cycle {cd['cycle_number']}  |  "
-                     f"P={cd['prob']:.2f}  ({'tox' if cd['label'] else 'neg'})")
-        for i, cd in enumerate(cycle_data)
-    ]
-    event_handles = [
-        mpatches.Patch(color=c, label=t.replace("_", " "))
-        for t, c in EVENT_TYPE_COLORS.items() if t != "special"
-    ]
-    axes[-1].legend(handles=cycle_handles + event_handles,
-                    fontsize=7, loc="lower right")
 
     fig.suptitle(f"Attention Rollout Across Cycles — Patient {subject_id}", fontsize=12)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
@@ -331,11 +326,11 @@ def plot_rollout_heatmap(
                 matrix[ri, ci] = max(matrix[ri, ci],
                                      float(cd["rollout"][j].item()))
 
-    col_labels = [f"Cycle {cd['cycle_number']}" for cd in cycle_data]
-    prob_subtitle = "  ".join(
-        f"C{cd['cycle_number']}: P={cd['prob']:.2f} ({'tox' if cd['label'] else 'neg'})"
+    col_labels = [
+        f"Cycle {cd['cycle_number']}\nP={cd['prob']:.2f}  "
+        f"({'tox' if cd['label'] else 'neg'})"
         for cd in cycle_data
-    )
+    ]
 
     fig, ax = plt.subplots(
         figsize=(max(5, n_cycles * 1.5), max(6, top_k * 0.3))
@@ -347,11 +342,196 @@ def plot_rollout_heatmap(
     ax.set_yticks(range(len(sorted_labels)))
     ax.set_yticklabels(sorted_labels, fontsize=7)
     ax.set_title(f"Rollout Heatmap — Patient {subject_id}", fontsize=12)
-    fig.text(0.5, 0.01, prob_subtitle, ha="center", fontsize=7.5,
-             color="#444444", style="italic")
 
-    fig.tight_layout(rect=[0, 0.04, 1, 1])
+    fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"  Saved {output_path.name}")
+
+
+# ── Plot 5: Attention heads per cycle ─────────────────────────────────────────
+
+def plot_attention_heads_per_cycle(
+    cycle_data: list[dict],
+    subject_id: int,
+    output_dir: Path,
+    top_k: int = 15,
+) -> None:
+    """
+    For each cycle, produce a grid of bar charts (n_layers × n_heads) showing
+    CLS attention over the top_k tokens with highest mean attention.
+    Saved to output_dir/cycle_{N}.png.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for cd in cycle_data:
+        all_attn  = cd["all_attn"]   # list of (n_heads, n_active, n_active)
+        n_layers  = len(all_attn)
+        if n_layers == 0:
+            continue
+        n_heads    = all_attn[0].shape[0]
+        raw_tokens = cd["raw_tokens"]   # already without CLS
+
+        # Mean CLS attention across heads and layers to select top_k tokens
+        mean_cls = np.zeros(len(raw_tokens))
+        for layer_attn in all_attn:
+            cls_row = layer_attn[:, 0, :]   # (n_heads, n_active); col 0 = CLS self-attn
+            n_tok   = cls_row.shape[-1]
+            content = cls_row[:, 1:min(n_tok, len(raw_tokens) + 1)]  # skip CLS col
+            mean_cls[:content.shape[1]] += content.mean(axis=0)
+        mean_cls /= max(n_layers, 1)
+
+        k        = min(top_k, len(raw_tokens))
+        top_idx  = np.argsort(mean_cls)[::-1][:k]
+        top_lbls = [cd["token_labels"][i].split(" [V")[0] for i in top_idx]
+
+        fig, axes = plt.subplots(
+            n_layers, n_heads,
+            figsize=(2.5 * n_heads, 1.8 * n_layers),
+            squeeze=False,
+        )
+
+        for li, layer_attn in enumerate(all_attn):
+            for hi in range(n_heads):
+                ax      = axes[li][hi]
+                cls_row = layer_attn[hi, 0, :]   # (n_active,)
+                vals    = np.array([
+                    cls_row[i + 1] if (i + 1) < len(cls_row) else 0.0
+                    for i in top_idx
+                ])
+                bar_colors = [
+                    EVENT_TYPE_COLORS.get(_event_type(raw_tokens[i]), "#999999")
+                    for i in top_idx[::-1]
+                ]
+                ax.barh(range(k), vals[::-1], color=bar_colors,
+                        edgecolor="white", linewidth=0.3)
+                ax.invert_yaxis()
+                if hi == 0:
+                    ax.set_yticks(range(k))
+                    ax.set_yticklabels(top_lbls[::-1], fontsize=5)
+                else:
+                    ax.set_yticks([])
+                ax.tick_params(axis="x", labelsize=5)
+                ax.set_title(f"L{li+1}H{hi+1}", fontsize=6, pad=2)
+
+        lbl_str = "tox" if cd["label"] else "neg"
+        fig.suptitle(
+            f"Attention Heads — Patient {subject_id}  "
+            f"Cycle {cd['cycle_number']}  P={cd['prob']:.2f}  ({lbl_str})",
+            fontsize=9,
+        )
+        fig.tight_layout(rect=[0, 0, 1, 0.96])
+        out = output_dir / f"cycle_{cd['cycle_number']}.png"
+        fig.savefig(out, dpi=130, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Saved {out.name}")
+
+
+# ── Plot 6: Separate rollout bar chart per cycle ───────────────────────────────
+
+def plot_rollout_cycles_separate(
+    cycle_data: list[dict],
+    subject_id: int,
+    output_dir: Path,
+    top_k: int = 20,
+) -> None:
+    """
+    One horizontal bar chart per cycle for rollout relevance.
+    Saved to output_dir/cycle_{N}.png.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for cd in cycle_data:
+        rollout = cd["rollout"].cpu().float().numpy()
+        k       = min(top_k, len(rollout))
+        top_idx = np.argsort(rollout)[::-1][:k]
+        labels  = [cd["token_labels"][i].split(" [V")[0] for i in top_idx]
+        scores  = rollout[top_idx]
+        colors  = [EVENT_TYPE_COLORS.get(_event_type(cd["raw_tokens"][i]), "#999999")
+                   for i in top_idx]
+
+        fig, ax = plt.subplots(figsize=(6, max(3, k * 0.3)))
+        ax.barh(range(k), scores[::-1], color=colors[::-1],
+                edgecolor="white", linewidth=0.4)
+        ax.invert_yaxis()
+        ax.set_yticks(range(k))
+        ax.set_yticklabels(labels[::-1], fontsize=7)
+        ax.set_xlabel("Rollout relevance", fontsize=8)
+        lbl_str = "tox" if cd["label"] else "neg"
+        ax.set_title(
+            f"Rollout — Patient {subject_id}  "
+            f"Cycle {cd['cycle_number']}  P={cd['prob']:.2f}  ({lbl_str})",
+            fontsize=10,
+        )
+
+        seen = {}
+        for i in top_idx:
+            et = _event_type(cd["raw_tokens"][i])
+            if et not in seen:
+                seen[et] = EVENT_TYPE_COLORS.get(et, "#999999")
+        handles = [mpatches.Patch(color=c, label=et) for et, c in seen.items()]
+        if handles:
+            ax.legend(handles=handles, fontsize=7, loc="lower right")
+
+        fig.tight_layout()
+        out = output_dir / f"cycle_{cd['cycle_number']}.png"
+        fig.savefig(out, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Saved {out.name}")
+
+
+# ── Plot 7: Separate IG bar chart per cycle ───────────────────────────────────
+
+def plot_ig_cycles_separate(
+    cycle_data: list[dict],
+    subject_id: int,
+    output_dir: Path,
+    top_k: int = 20,
+) -> None:
+    """
+    One signed IG bar chart per cycle.  Red = pro-toxic, blue = protective.
+    Saved to output_dir/cycle_{N}.png.  Skipped for cycles with no IG data.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    for cd in cycle_data:
+        ig_signed = cd.get("ig_signed")
+        if ig_signed is None:
+            continue
+
+        ig_np = ig_signed.cpu().float().numpy()
+        ig_l2 = (cd["ig_l2"].cpu().float().numpy()
+                 if cd.get("ig_l2") is not None else np.abs(ig_np))
+
+        k       = min(top_k, len(ig_l2))
+        top_idx = np.argsort(ig_l2)[::-1][:k]
+        labels  = [cd["token_labels"][i].split(" [V")[0] for i in top_idx]
+        vals    = ig_np[top_idx]
+        colors  = ["#d62728" if v >= 0 else "#1f77b4" for v in vals]
+
+        fig, ax = plt.subplots(figsize=(6, max(3, k * 0.3)))
+        ax.barh(range(k), vals[::-1], color=colors[::-1],
+                edgecolor="white", linewidth=0.4)
+        ax.invert_yaxis()
+        ax.axvline(0, color="black", linewidth=0.7, linestyle="--")
+        ax.set_yticks(range(k))
+        ax.set_yticklabels(labels[::-1], fontsize=7)
+        ax.set_xlabel("Signed IG attribution", fontsize=8)
+        lbl_str = "tox" if cd["label"] else "neg"
+        ax.set_title(
+            f"Integrated Gradients — Patient {subject_id}  "
+            f"Cycle {cd['cycle_number']}  P={cd['prob']:.2f}  ({lbl_str})",
+            fontsize=10,
+        )
+        handles = [
+            mpatches.Patch(color="#d62728", label="Pro-toxic"),
+            mpatches.Patch(color="#1f77b4", label="Protective"),
+        ]
+        ax.legend(handles=handles, fontsize=7, loc="lower right")
+
+        fig.tight_layout()
+        out = output_dir / f"cycle_{cd['cycle_number']}.png"
+        fig.savefig(out, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Saved {out.name}")

@@ -27,7 +27,8 @@ from interpretation.interpret import (
     compute_integrated_gradients,
 )
 from .utils import (EVENT_TYPE_COLORS, LABEL_COLORS, LABEL_NAMES,
-                    DRUG_CLASS_COLORS, PATIENT_OVERLAY_COLORS)
+                    DRUG_CLASS_GROUP_MAP, DRUG_CLASS_GROUP_COLORS,
+                    PATIENT_OVERLAY_COLORS)
 from .embeddings import reduce_dim
 
 
@@ -180,16 +181,19 @@ def plot_cls_embedding_space(
     plt.close(fig)
     print("  Saved cls_space_by_cycle.png")
 
-    # ── by drug class (per cycle) ─────────────────────────────────────────────
+    # ── by drug class group (per cycle) ──────────────────────────────────────
     if "drug_classes_in_cycle" in subset_df.columns:
-        drug_classes   = subset_df["drug_classes_in_cycle"].fillna("unknown").values
-        unique_classes = sorted(set(drug_classes))
+        drug_groups  = (subset_df["drug_classes_in_cycle"]
+                        .map(lambda x: DRUG_CLASS_GROUP_MAP.get(x, "Other targeted")
+                             if pd.notna(x) else "unknown")
+                        .values)
+        group_order  = [g for g in DRUG_CLASS_GROUP_COLORS if g in set(drug_groups)]
         fig, ax = plt.subplots(figsize=(9, 7))
-        for dc in unique_classes:
-            mask  = drug_classes == dc
-            color = DRUG_CLASS_COLORS.get(dc, "#aaaaaa")
+        for grp in group_order:
+            mask  = drug_groups == grp
+            color = DRUG_CLASS_GROUP_COLORS[grp]
             ax.scatter(coords[mask, 0], coords[mask, 1], c=color,
-                       label=dc.replace("_", " ") + f" (n={mask.sum()})",
+                       label=f"{grp} (n={mask.sum()})",
                        alpha=0.6, s=20, linewidths=0, rasterized=True)
         pat_handles = _overlay_patients(ax)
         handles, labels_list = ax.get_legend_handles_labels()
@@ -211,14 +215,17 @@ def plot_cls_embedding_space(
 
     # ── by primary regimen ────────────────────────────────────────────────────
     if "primary_drug_class" in subset_df.columns:
-        primary        = subset_df["primary_drug_class"].fillna("unknown").values
-        unique_primary = sorted(set(primary))
+        primary_groups = (subset_df["primary_drug_class"]
+                          .map(lambda x: DRUG_CLASS_GROUP_MAP.get(x, "Other targeted")
+                               if pd.notna(x) else "unknown")
+                          .values)
+        group_order    = [g for g in DRUG_CLASS_GROUP_COLORS if g in set(primary_groups)]
         fig, ax = plt.subplots(figsize=(9, 7))
-        for dc in unique_primary:
-            mask  = primary == dc
-            color = DRUG_CLASS_COLORS.get(dc, "#aaaaaa")
+        for grp in group_order:
+            mask  = primary_groups == grp
+            color = DRUG_CLASS_GROUP_COLORS[grp]
             ax.scatter(coords[mask, 0], coords[mask, 1], c=color,
-                       label=dc.replace("_", " ") + f" (n={mask.sum()})",
+                       label=f"{grp} (n={mask.sum()})",
                        alpha=0.6, s=20, linewidths=0, rasterized=True)
         pat_handles = _overlay_patients(ax)
         handles, labels_list = ax.get_legend_handles_labels()
@@ -274,16 +281,12 @@ def compute_population_ig(
     indices: list[int],
     device: torch.device,
     ig_steps: int = 30,
-    max_samples: int = 50,
     cache_path: Path | None = None,
 ) -> pd.DataFrame:
     """
-    Compute and aggregate signed IG attribution across a population of samples.
+    Compute and aggregate signed IG attribution across all samples in indices.
 
     If cache_path exists the cached CSV is returned without re-computing.
-    Otherwise computes IG on up to max_samples randomly drawn from indices,
-    saves the cache, and returns the aggregated DataFrame.
-
     Columns: token, label, event_type, mean_ig_signed, std_ig_signed, sem_ig_signed,
              n, abs_mean_ig
     """
@@ -291,15 +294,13 @@ def compute_population_ig(
         print(f"  Loading cached population IG from {cache_path}")
         return pd.read_csv(cache_path)
 
-    rng = np.random.default_rng(42)
-    sampled = (rng.choice(indices, size=max_samples, replace=False).tolist()
-               if len(indices) > max_samples else list(indices))
-    print(f"  Computing IG on {len(sampled)}/{len(indices)} samples "
-          f"({ig_steps} steps each)...")
+    sampled = list(indices)
+    print(f"  Computing IG on {len(sampled)} samples ({ig_steps} steps each)...")
 
     rows: list[dict] = []
+    n_total = len(sampled)
     for si, idx in enumerate(sampled):
-        print(f"    sample {si + 1}/{len(sampled)}\r", end="", flush=True)
+        print(f"    sample {si + 1}/{n_total}\r", end="", flush=True)
         batch = {k: v[[idx]].to(device) for k, v in tensors.items()}
 
         concept_ids_1d = batch["concept_ids"][0].cpu()
