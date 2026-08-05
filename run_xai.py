@@ -157,8 +157,7 @@ def run_dataset_level(model, samples_df, tensors, inv_vocab, split_indices, devi
     )
 
     if RUN_POPULATION_IG:
-        print(f"\nPopulation IG  (max {MAX_IG_SAMPLES} samples, "
-              f"{IG_STEPS_POPULATION} steps)...")
+        print(f"\nPopulation IG  ({IG_STEPS_POPULATION} steps, all samples)...")
         ig_df = xai.compute_population_ig(
             model      = model,
             tensors    = tensors,
