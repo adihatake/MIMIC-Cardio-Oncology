@@ -6,6 +6,7 @@ data_outputs/
 cohort_outputs/
 tokenization_outputs/
 experiment_outputs/
+xai_outputs/
 
 # Large files / patient data
 *.parquet
