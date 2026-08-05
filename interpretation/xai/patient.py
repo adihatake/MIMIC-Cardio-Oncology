@@ -14,6 +14,7 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.patches as mpatches
+from matplotlib.lines import Line2D
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -171,18 +172,19 @@ def plot_cls_trajectory(
     ):
         ax.scatter(coord[0], coord[1], c=[palette[i]], s=160, zorder=4,
                    edgecolors=LABEL_COLORS.get(lbl, "#888888"), linewidths=2.0)
-        ax.annotate(f"  Cycle {cyc}\n  P={prob:.2f}", xy=(coord[0], coord[1]),
+        ax.annotate(f"  Cycle {cyc}", xy=(coord[0], coord[1]),
                     fontsize=8.5, color="#111111", ha="left", va="bottom", zorder=5)
 
     ax.set_xlabel(f"{method_name} dim 1", fontsize=10)
     ax.set_ylabel(f"{method_name} dim 2", fontsize=10)
     ax.set_title(f"CLS Trajectory — Patient {subject_id}", fontsize=12)
     ax.legend(handles=[
-        mpatches.Patch(color=palette[i], label=f"Cycle {c}")
+        mpatches.Patch(color=palette[i],
+                       label=f"Cycle {c}  |  P(cardiotoxic)={probs[i]:.2f}")
         for i, c in enumerate(cycle_nums)
     ] + [
-        mpatches.Patch(color=LABEL_COLORS[0], label="True: non-toxic (border)"),
-        mpatches.Patch(color=LABEL_COLORS[1], label="True: cardiotoxic (border)"),
+        mpatches.Patch(color=LABEL_COLORS[0], label="True label: non-toxic (border)"),
+        mpatches.Patch(color=LABEL_COLORS[1], label="True label: cardiotoxic (border)"),
     ], fontsize=8, loc="upper left")
     ax.text(0.99, 0.01, method_name, transform=ax.transAxes,
             fontsize=8, color="gray", ha="right", va="bottom")
@@ -254,21 +256,27 @@ def plot_rollout_per_cycle(
         ax.barh(range(len(sorted_tokens)), scores, color=colors,
                 edgecolor="white", linewidth=0.4)
         ax.invert_yaxis()
-        ax.set_title(
-            f"Cycle {cd['cycle_number']}\n"
-            f"P={cd['prob']:.2f}  {'tox' if cd['label'] else 'neg'}",
-            fontsize=9,
-        )
+        ax.set_title(f"Cycle {cd['cycle_number']}", fontsize=9)
         ax.set_xlabel("Rollout relevance", fontsize=8)
         if ci == 0:
             ax.set_yticks(range(len(sorted_labels)))
             ax.set_yticklabels(sorted_labels, fontsize=7)
         ax.tick_params(axis="x", labelsize=7)
 
-    axes[-1].legend(handles=[
-        mpatches.Patch(color=c, label=t)
+    palette = plt.cm.plasma(np.linspace(0.15, 0.85, max(n_cycles, 2)))
+    cycle_handles = [
+        Line2D([0], [0], marker="o", color="w", markerfacecolor=palette[i],
+               markersize=7,
+               label=f"Cycle {cd['cycle_number']}  |  "
+                     f"P={cd['prob']:.2f}  ({'tox' if cd['label'] else 'neg'})")
+        for i, cd in enumerate(cycle_data)
+    ]
+    event_handles = [
+        mpatches.Patch(color=c, label=t.replace("_", " "))
         for t, c in EVENT_TYPE_COLORS.items() if t != "special"
-    ], fontsize=7, loc="lower right")
+    ]
+    axes[-1].legend(handles=cycle_handles + event_handles,
+                    fontsize=7, loc="lower right")
 
     fig.suptitle(f"Attention Rollout Across Cycles — Patient {subject_id}", fontsize=12)
     fig.tight_layout(rect=[0, 0, 1, 0.95])
@@ -323,8 +331,11 @@ def plot_rollout_heatmap(
                 matrix[ri, ci] = max(matrix[ri, ci],
                                      float(cd["rollout"][j].item()))
 
-    col_labels = [f"Cycle {cd['cycle_number']}\nP={cd['prob']:.2f}"
-                  for cd in cycle_data]
+    col_labels = [f"Cycle {cd['cycle_number']}" for cd in cycle_data]
+    prob_subtitle = "  ".join(
+        f"C{cd['cycle_number']}: P={cd['prob']:.2f} ({'tox' if cd['label'] else 'neg'})"
+        for cd in cycle_data
+    )
 
     fig, ax = plt.subplots(
         figsize=(max(5, n_cycles * 1.5), max(6, top_k * 0.3))
@@ -336,8 +347,10 @@ def plot_rollout_heatmap(
     ax.set_yticks(range(len(sorted_labels)))
     ax.set_yticklabels(sorted_labels, fontsize=7)
     ax.set_title(f"Rollout Heatmap — Patient {subject_id}", fontsize=12)
+    fig.text(0.5, 0.01, prob_subtitle, ha="center", fontsize=7.5,
+             color="#444444", style="italic")
 
-    fig.tight_layout()
+    fig.tight_layout(rect=[0, 0.04, 1, 1])
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)

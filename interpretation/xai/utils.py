@@ -36,20 +36,48 @@ LAB_NAMES: dict[str, str] = {
 }
 
 EVENT_TYPE_COLORS: dict[str, str] = {
-    "special":    "#999999",
-    "diagnosis":  "#4e79a7",
-    "procedure":  "#76b7b2",
-    "medication": "#f28e2b",
-    "lab":        "#e15759",
+    "special":    "#aaaaaa",   # neutral gray
+    "diagnosis":  "#1f77b4",   # blue
+    "procedure":  "#2ca02c",   # green
+    "medication": "#ff7f0e",   # orange
+    "lab":        "#d62728",   # red
 }
 
-LABEL_COLORS: dict[int, str] = {0: "#2980b9", 1: "#c0392b"}
+LABEL_COLORS: dict[int, str] = {0: "#1f77b4", 1: "#d62728"}
 LABEL_NAMES:  dict[int, str] = {0: "Non-cardiotoxic", 1: "Cardiotoxic"}
 
 PERTURB_COLORS: list[str] = [
     "#e41a1c", "#377eb8", "#4daf4a", "#ff7f00",
-    "#984ea3", "#a65628", "#f781bf", "#999999",
+    "#984ea3", "#a65628", "#f781bf", "#17becf",
 ]
+
+# Tab10 minus blue (#1f77b4) and red (#d62728), which are reserved for label colours.
+# Used to distinguish individual patients when overlaid on dataset CLS space plots.
+PATIENT_OVERLAY_COLORS: list[str] = [
+    "#ff7f0e",  # orange
+    "#9467bd",  # purple
+    "#2ca02c",  # green
+    "#17becf",  # cyan
+    "#e377c2",  # pink
+    "#bcbd22",  # olive
+    "#8c564b",  # brown
+    "#7f7f7f",  # gray
+]
+
+# Tab10 palette — designed for maximum categorical discriminability
+DRUG_CLASS_COLORS: dict[str, str] = {
+    "anthracycline":               "#d62728",  # red
+    "immune_checkpoint_inhibitor": "#1f77b4",  # blue
+    "her2_targeted":               "#2ca02c",  # green
+    "taxane":                      "#9467bd",  # purple
+    "fluoropyrimidine":            "#ff7f0e",  # orange
+    "vegf_inhibitor":              "#17becf",  # cyan
+    "egfr_inhibitor":              "#e377c2",  # pink
+    "tyrosine_kinase_inhibitor":   "#8c564b",  # brown
+    "proteasome_inhibitor":        "#bcbd22",  # olive
+    "immunomodulatory_agent":      "#7f7f7f",  # gray
+    "other_oncology":              "#c5b0d5",  # light purple
+}
 
 
 # ── Vocabulary helpers ────────────────────────────────────────────────────────
@@ -130,6 +158,67 @@ def get_indices(
         return combined, labels
     idxs = split_indices[split_filter]
     return idxs, [split_filter] * len(idxs)
+
+
+def enrich_samples_with_drug_info(
+    samples_df: pd.DataFrame,
+    data_dir: Path,
+    cohort_table_path: Path | None = None,
+) -> pd.DataFrame:
+    """
+    Join drug class / prescription-count columns from the modeling table onto
+    samples_df.  The modeling table is auto-discovered via metadata.json
+    (modeling_dir field), or can be supplied explicitly via cohort_table_path.
+
+    Adds columns (when available):
+        drug_classes_in_cycle   primary drug class string for this cycle
+        drugs_in_cycle          specific drug name(s)
+        n_prescription_rows_in_cycle   prescription row count (dose proxy)
+        primary_drug_class      drug class at cycle 1 per patient (for all cycles)
+
+    Returns the original df unchanged if the modeling table cannot be found.
+    """
+    if cohort_table_path is None:
+        meta_path = data_dir / "metadata.json"
+        if not meta_path.exists():
+            print("  [drug info] metadata.json not found — skipping enrichment")
+            return samples_df
+        with open(meta_path) as f:
+            meta = json.load(f)
+        modeling_dir = Path(meta.get("modeling_dir", ""))
+        if not modeling_dir.is_absolute():
+            modeling_dir = REPO_ROOT / modeling_dir
+        candidates = [
+            modeling_dir / "final_cycle_binary_modeling_table.parquet",
+            modeling_dir / "final_cycle_modeling_table.parquet",
+        ]
+        cohort_table_path = next((p for p in candidates if p.exists()), None)
+
+    if cohort_table_path is None or not cohort_table_path.exists():
+        print("  [drug info] modeling table not found — skipping enrichment")
+        return samples_df
+
+    keep = ["subject_id", "cycle_number",
+            "drug_classes_in_cycle", "drugs_in_cycle",
+            "n_prescription_rows_in_cycle"]
+    cohort = pd.read_parquet(cohort_table_path, columns=keep)
+    cohort["cycle_number"] = cohort["cycle_number"].astype(int)
+
+    enriched = samples_df.merge(cohort, on=["subject_id", "cycle_number"], how="left")
+
+    # primary_drug_class: drug class at each patient's first (lowest) cycle number
+    first_class = (
+        enriched.dropna(subset=["drug_classes_in_cycle"])
+        .sort_values("cycle_number")
+        .groupby("subject_id")["drug_classes_in_cycle"]
+        .first()
+        .rename("primary_drug_class")
+    )
+    enriched = enriched.merge(first_class, on="subject_id", how="left")
+
+    print(f"  [drug info] enriched with drug class from {cohort_table_path.name} "
+          f"({enriched['drug_classes_in_cycle'].notna().sum()}/{len(enriched)} rows matched)")
+    return enriched.reset_index(drop=True)
 
 
 def find_patient_indices(

@@ -16,11 +16,13 @@ from .utils import (
     LABEL_COLORS,
     LABEL_NAMES,
     PERTURB_COLORS,
+    DRUG_CLASS_COLORS,
     load_vocab,
     load_samples_df,
     load_setup,
     get_indices,
     find_patient_indices,
+    enrich_samples_with_drug_info,
 )
 
 from .embeddings import (
@@ -53,7 +55,9 @@ from .perturbation import (
 __all__ = [
     # utils
     "LAB_NAMES", "EVENT_TYPE_COLORS", "LABEL_COLORS", "LABEL_NAMES", "PERTURB_COLORS",
+    "DRUG_CLASS_COLORS", "PATIENT_OVERLAY_COLORS",
     "load_vocab", "load_samples_df", "load_setup", "get_indices", "find_patient_indices",
+    "enrich_samples_with_drug_info",
     # embeddings
     "extract_cls_embeddings", "get_predictions", "reduce_dim", "project_together",
     # population

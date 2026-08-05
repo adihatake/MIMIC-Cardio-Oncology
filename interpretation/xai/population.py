@@ -26,7 +26,8 @@ from interpretation.interpret import (
     _decode_tokens, _event_type, _human_label,
     compute_integrated_gradients,
 )
-from .utils import EVENT_TYPE_COLORS, LABEL_COLORS, LABEL_NAMES
+from .utils import (EVENT_TYPE_COLORS, LABEL_COLORS, LABEL_NAMES,
+                    DRUG_CLASS_COLORS, PATIENT_OVERLAY_COLORS)
 from .embeddings import reduce_dim
 
 
@@ -42,20 +43,43 @@ def plot_cls_embedding_space(
     method: str = "umap",
     split_filter: str = "test",
     random_state: int = 42,
+    patient_overlay: dict[int, torch.Tensor] | None = None,
 ) -> np.ndarray:
     """
-    Produce three scatter plots of the CLS embedding space:
-      cls_space_by_label.png    — coloured by true label
-      cls_space_by_prob.png     — coloured by P(cardiotoxic)
-      cls_space_by_cycle.png    — coloured by cycle number
+    Produce CLS embedding space scatter plots coloured by various attributes.
 
-    Returns the (N, 2) projection for reuse in trajectory plots.
+    patient_overlay: optional dict of {subject_id: (n_cycles, d_model) tensor}.
+    When provided, all patient embeddings are projected jointly with the
+    background so they share the same coordinate space, then overlaid as
+    stars on every subplot.
+
+    Returns the (N_background, 2) projection coordinates.
     """
     emb_np = embeddings.float().numpy()
-    print(f"\nReducing {emb_np.shape[0]} embeddings with {method.upper()}...")
-    coords, method_name = reduce_dim(emb_np, method=method, random_state=random_state)
-    print(f"  {method_name} complete. Shape: {coords.shape}")
+    n_bg   = len(emb_np)
 
+    # ── Joint projection (background + patients in one call) ──────────────────
+    if patient_overlay:
+        pat_emb_list = [v.float().numpy() for v in patient_overlay.values()]
+        pat_sizes    = [len(e) for e in pat_emb_list]
+        combined     = np.vstack([emb_np] + pat_emb_list)
+        print(f"\nReducing {n_bg} background + {sum(pat_sizes)} patient embeddings "
+              f"jointly with {method.upper()}...")
+        coords_all, method_name = reduce_dim(combined, method=method,
+                                             random_state=random_state)
+        coords = coords_all[:n_bg]
+        patient_coords: dict[int, np.ndarray] = {}
+        ptr = n_bg
+        for sid, size in zip(patient_overlay.keys(), pat_sizes):
+            patient_coords[sid] = coords_all[ptr : ptr + size]
+            ptr += size
+    else:
+        print(f"\nReducing {n_bg} embeddings with {method.upper()}...")
+        coords, method_name = reduce_dim(emb_np, method=method,
+                                         random_state=random_state)
+        patient_coords = {}
+
+    print(f"  {method_name} complete. Shape: {coords.shape}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     subset_df  = samples_df.iloc[indices].reset_index(drop=True)
@@ -66,9 +90,31 @@ def plot_cls_embedding_space(
     xlabel = f"{method_name} dim 1"
     ylabel = f"{method_name} dim 2"
 
+    # Pre-compute cycle numbers for each patient overlay
+    pat_cycle_nums: dict[int, list[int]] = {}
+    for sid in patient_coords:
+        pat_rows = (samples_df[samples_df["subject_id"] == sid]
+                    .sort_values("cycle_number"))
+        pat_cycle_nums[sid] = pat_rows["cycle_number"].tolist()
+
     def _method_tag(ax: plt.Axes) -> None:
         ax.text(0.99, 0.01, method_name, transform=ax.transAxes,
                 fontsize=8, color="gray", ha="right", va="bottom")
+
+    def _overlay_patients(ax: plt.Axes) -> list:
+        """Draw star markers for each patient and return legend handles."""
+        handles = []
+        for pi, (sid, pcoords) in enumerate(patient_coords.items()):
+            color  = PATIENT_OVERLAY_COLORS[pi % len(PATIENT_OVERLAY_COLORS)]
+            cycles = pat_cycle_nums.get(sid, list(range(1, len(pcoords) + 1)))
+            for j, (px, py) in enumerate(pcoords):
+                cyc = cycles[j] if j < len(cycles) else j + 1
+                ax.scatter(px, py, c=color, s=300, marker="*", zorder=6,
+                           edgecolors="white", linewidths=0.5)
+                ax.annotate(f" C{cyc}", xy=(px, py), fontsize=7.5, color=color,
+                            fontweight="bold", zorder=7, ha="left", va="bottom")
+            handles.append(mpatches.Patch(color=color, label=f"Patient {sid}"))
+        return handles
 
     # ── by true label ─────────────────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(9, 7))
@@ -76,14 +122,16 @@ def plot_cls_embedding_space(
         mask = labels == lbl
         if not mask.any():
             continue
-        ax.scatter(coords[mask, 0], coords[mask, 1],
-                   c=LABEL_COLORS[lbl],
+        ax.scatter(coords[mask, 0], coords[mask, 1], c=LABEL_COLORS[lbl],
                    label=f"{LABEL_NAMES[lbl]} (n={mask.sum()})",
                    alpha=0.55, s=20, linewidths=0, rasterized=True)
+    pat_handles = _overlay_patients(ax)
     ax.set_xlabel(xlabel, fontsize=10)
     ax.set_ylabel(ylabel, fontsize=10)
     ax.set_title(f"CLS Embedding Space — {split_filter} split (true label)", fontsize=12)
-    ax.legend(fontsize=9, markerscale=1.8)
+    ax.legend(handles=ax.get_legend_handles_labels()[0] + pat_handles,
+              labels=ax.get_legend_handles_labels()[1] + [h.get_label() for h in pat_handles],
+              fontsize=9, markerscale=1.8)
     _method_tag(ax)
     fig.tight_layout()
     fig.savefig(output_dir / "cls_space_by_label.png", dpi=150, bbox_inches="tight")
@@ -92,13 +140,16 @@ def plot_cls_embedding_space(
 
     # ── by prediction probability ──────────────────────────────────────────────
     fig, ax = plt.subplots(figsize=(9, 7))
-    sc = ax.scatter(coords[:, 0], coords[:, 1],
-                    c=probs, cmap="RdBu_r", vmin=0, vmax=1,
-                    alpha=0.6, s=20, linewidths=0, rasterized=True)
+    sc = ax.scatter(coords[:, 0], coords[:, 1], c=probs, cmap="RdBu_r",
+                    vmin=0, vmax=1, alpha=0.6, s=20, linewidths=0, rasterized=True)
     plt.colorbar(sc, ax=ax, label="P(cardiotoxic)", fraction=0.035, pad=0.02)
+    pat_handles = _overlay_patients(ax)
+    if pat_handles:
+        ax.legend(handles=pat_handles, fontsize=9, loc="upper left")
     ax.set_xlabel(xlabel, fontsize=10)
     ax.set_ylabel(ylabel, fontsize=10)
-    ax.set_title(f"CLS Embedding Space — {split_filter} split (P(cardiotoxic))", fontsize=12)
+    ax.set_title(f"CLS Embedding Space — {split_filter} split (P(cardiotoxic))",
+                 fontsize=12)
     _method_tag(ax)
     fig.tight_layout()
     fig.savefig(output_dir / "cls_space_by_prob.png", dpi=150, bbox_inches="tight")
@@ -112,22 +163,105 @@ def plot_cls_embedding_space(
     fig, ax = plt.subplots(figsize=(9, 7))
     for ci, cyc in enumerate(unique_cycles):
         mask = cycle_nums == cyc
-        ax.scatter(coords[mask, 0], coords[mask, 1],
-                   c=[palette[ci]],
+        ax.scatter(coords[mask, 0], coords[mask, 1], c=[palette[ci]],
                    label=f"Cycle {int(cyc)} (n={mask.sum()})",
                    alpha=0.55, s=20, linewidths=0, rasterized=True)
+    pat_handles = _overlay_patients(ax)
+    handles, labels_list = ax.get_legend_handles_labels()
+    ax.legend(handles=handles + pat_handles,
+              labels=labels_list + [h.get_label() for h in pat_handles],
+              fontsize=8, markerscale=1.8, ncol=min(3, len(unique_cycles)))
     ax.set_xlabel(xlabel, fontsize=10)
     ax.set_ylabel(ylabel, fontsize=10)
     ax.set_title(f"CLS Embedding Space — {split_filter} split (cycle number)", fontsize=12)
-    ax.legend(fontsize=8, markerscale=1.8, ncol=min(3, len(unique_cycles)))
     _method_tag(ax)
     fig.tight_layout()
     fig.savefig(output_dir / "cls_space_by_cycle.png", dpi=150, bbox_inches="tight")
     plt.close(fig)
     print("  Saved cls_space_by_cycle.png")
 
+    # ── by drug class (per cycle) ─────────────────────────────────────────────
+    if "drug_classes_in_cycle" in subset_df.columns:
+        drug_classes   = subset_df["drug_classes_in_cycle"].fillna("unknown").values
+        unique_classes = sorted(set(drug_classes))
+        fig, ax = plt.subplots(figsize=(9, 7))
+        for dc in unique_classes:
+            mask  = drug_classes == dc
+            color = DRUG_CLASS_COLORS.get(dc, "#aaaaaa")
+            ax.scatter(coords[mask, 0], coords[mask, 1], c=color,
+                       label=dc.replace("_", " ") + f" (n={mask.sum()})",
+                       alpha=0.6, s=20, linewidths=0, rasterized=True)
+        pat_handles = _overlay_patients(ax)
+        handles, labels_list = ax.get_legend_handles_labels()
+        ax.legend(handles=handles + pat_handles,
+                  labels=labels_list + [h.get_label() for h in pat_handles],
+                  fontsize=8, markerscale=1.8,
+                  bbox_to_anchor=(1.01, 1), loc="upper left",
+                  borderaxespad=0, frameon=True)
+        ax.set_xlabel(xlabel, fontsize=10)
+        ax.set_ylabel(ylabel, fontsize=10)
+        ax.set_title(f"CLS Embedding Space — {split_filter} split (drug class per cycle)",
+                     fontsize=12)
+        _method_tag(ax)
+        fig.tight_layout()
+        fig.savefig(output_dir / "cls_space_by_drug_class.png", dpi=150,
+                    bbox_inches="tight")
+        plt.close(fig)
+        print("  Saved cls_space_by_drug_class.png")
+
+    # ── by primary regimen ────────────────────────────────────────────────────
+    if "primary_drug_class" in subset_df.columns:
+        primary        = subset_df["primary_drug_class"].fillna("unknown").values
+        unique_primary = sorted(set(primary))
+        fig, ax = plt.subplots(figsize=(9, 7))
+        for dc in unique_primary:
+            mask  = primary == dc
+            color = DRUG_CLASS_COLORS.get(dc, "#aaaaaa")
+            ax.scatter(coords[mask, 0], coords[mask, 1], c=color,
+                       label=dc.replace("_", " ") + f" (n={mask.sum()})",
+                       alpha=0.6, s=20, linewidths=0, rasterized=True)
+        pat_handles = _overlay_patients(ax)
+        handles, labels_list = ax.get_legend_handles_labels()
+        ax.legend(handles=handles + pat_handles,
+                  labels=labels_list + [h.get_label() for h in pat_handles],
+                  fontsize=8, markerscale=1.8,
+                  bbox_to_anchor=(1.01, 1), loc="upper left",
+                  borderaxespad=0, frameon=True)
+        ax.set_xlabel(xlabel, fontsize=10)
+        ax.set_ylabel(ylabel, fontsize=10)
+        ax.set_title(f"CLS Embedding Space — {split_filter} split (primary regimen)",
+                     fontsize=12)
+        _method_tag(ax)
+        fig.tight_layout()
+        fig.savefig(output_dir / "cls_space_by_primary_regimen.png", dpi=150,
+                    bbox_inches="tight")
+        plt.close(fig)
+        print("  Saved cls_space_by_primary_regimen.png")
+
+    # ── by prescription count (dose proxy, continuous) ────────────────────────
+    if "n_prescription_rows_in_cycle" in subset_df.columns:
+        rx_counts = subset_df["n_prescription_rows_in_cycle"].fillna(0).values.astype(float)
+        fig, ax = plt.subplots(figsize=(9, 7))
+        sc = ax.scatter(coords[:, 0], coords[:, 1], c=rx_counts, cmap="viridis",
+                        alpha=0.6, s=20, linewidths=0, rasterized=True)
+        plt.colorbar(sc, ax=ax, label="Prescription rows in cycle (dose proxy)",
+                     fraction=0.035, pad=0.02)
+        pat_handles = _overlay_patients(ax)
+        if pat_handles:
+            ax.legend(handles=pat_handles, fontsize=9, loc="upper left")
+        ax.set_xlabel(xlabel, fontsize=10)
+        ax.set_ylabel(ylabel, fontsize=10)
+        ax.set_title(f"CLS Embedding Space — {split_filter} split (cumulative dose proxy)",
+                     fontsize=12)
+        _method_tag(ax)
+        fig.tight_layout()
+        fig.savefig(output_dir / "cls_space_by_rx_count.png", dpi=150,
+                    bbox_inches="tight")
+        plt.close(fig)
+        print("  Saved cls_space_by_rx_count.png")
+
     np.save(output_dir / "cls_coords_2d.npy", coords)
-    print(f"  Saved cls_coords_2d.npy  (reuse for trajectory plots)")
+    print("  Saved cls_coords_2d.npy")
     return coords
 
 
