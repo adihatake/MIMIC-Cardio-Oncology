@@ -27,6 +27,7 @@ sys.path.insert(0, str(REPO_ROOT))
 from interpretation.interpret import (
     _decode_tokens, _event_type,
     compute_rollout, compute_integrated_gradients,
+    plot_attention_heatmap,
 )
 from .utils import EVENT_TYPE_COLORS, LABEL_COLORS, LABEL_NAMES
 from model_src.ehr_encoder import EHR_Encoder
@@ -178,8 +179,11 @@ def plot_cls_trajectory(
     for i, (coord, cyc, prob, lbl) in enumerate(
         zip(patient_coords_2d, cycle_nums, probs, labels)
     ):
-        ax.scatter(coord[0], coord[1], c=[palette[i]], s=160, zorder=4,
+        ax.scatter(coord[0], coord[1], c=[palette[i]], s=350, zorder=4,
                    edgecolors=LABEL_COLORS.get(lbl, "#888888"), linewidths=2.0)
+        ax.text(coord[0], coord[1], str(cyc),
+                ha="center", va="center", fontsize=8, fontweight="bold",
+                color="white", zorder=5)
 
     ax.set_xlabel(f"{method_name} dim 1", fontsize=10)
     ax.set_ylabel(f"{method_name} dim 2", fontsize=10)
@@ -356,87 +360,42 @@ def plot_attention_heads_per_cycle(
     cycle_data: list[dict],
     subject_id: int,
     output_dir: Path,
-    top_k: int = 30,
+    max_tokens: int = 60,
 ) -> None:
     """
-    For each cycle, produce a grid of attention-matrix heatmaps (n_layers × n_heads).
-    Each cell shows the raw (top_k × top_k) attention matrix for that head, where
-    tokens are selected by highest mean CLS attention across all heads/layers.
-    Rows = query tokens, columns = key tokens.
-    Saved to output_dir/cycle_{N}.png.
+    For each cycle, saves one attention-matrix heatmap per (layer, head) to:
+        output_dir/cycle_{N}/attention_L{li}_H{hi}.png
+    Uses the same style as run_interpretation.py (viridis, full seq × seq matrix).
+    token_labels in cycle_data have CLS stripped, so "CLS" is prepended here.
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
-
     for cd in cycle_data:
-        all_attn  = cd["all_attn"]   # list of (n_heads, n_active, n_active)
-        n_layers  = len(all_attn)
+        all_attn = cd["all_attn"]   # list of (n_heads, n_active, n_active) arrays
+        n_layers = len(all_attn)
         if n_layers == 0:
             continue
-        n_heads    = all_attn[0].shape[0]
-        n_active   = all_attn[0].shape[-1]
-        # Index 0 in all_attn matrices = CLS; raw_tokens has CLS stripped,
-        # so content token j in raw_tokens → matrix column/row (j+1).
+        n_heads = all_attn[0].shape[0]
 
-        # Select top_k content tokens by mean CLS-row attention across heads/layers
-        mean_cls = np.zeros(n_active - 1)   # exclude CLS self
-        for layer_attn in all_attn:
-            mean_cls += layer_attn[:, 0, 1:].mean(axis=0)   # mean over heads
-        mean_cls /= max(n_layers, 1)
+        # Reconstruct full token_labels including CLS at position 0
+        full_labels = ["CLS"] + list(cd["token_labels"])
 
-        k       = min(top_k, n_active - 1)
-        top_idx = np.argsort(mean_cls)[::-1][:k]   # indices into raw_tokens
-        # Matrix indices (include CLS at 0): [0] + [i+1 for i in top_idx]
-        mat_idx = np.array([0] + [i + 1 for i in top_idx])
-
-        # Short display labels: CLS + truncated token labels
-        raw_tokens = cd["raw_tokens"]
-        tick_lbls  = ["CLS"] + [
-            cd["token_labels"][i].split(" [V")[0][:18] for i in top_idx
-        ]
-
-        cell_size = 0.38
-        fig, axes = plt.subplots(
-            n_layers, n_heads,
-            figsize=(cell_size * (k + 1) * n_heads + 0.5,
-                     cell_size * (k + 1) * n_layers + 0.8),
-            squeeze=False,
-        )
-
-        for li, layer_attn in enumerate(all_attn):
-            for hi in range(n_heads):
-                ax  = axes[li][hi]
-                mat = layer_attn[hi][np.ix_(mat_idx, mat_idx)]   # (k+1, k+1)
-                im  = ax.imshow(mat, aspect="auto", cmap="Blues",
-                                vmin=0, vmax=mat.max() or 1e-6,
-                                interpolation="nearest")
-
-                ax.set_title(f"L{li+1}H{hi+1}", fontsize=6, pad=2)
-
-                # Labels only on outermost subplots to avoid clutter
-                if hi == 0:
-                    ax.set_yticks(range(k + 1))
-                    ax.set_yticklabels(tick_lbls, fontsize=4)
-                else:
-                    ax.set_yticks([])
-                if li == n_layers - 1:
-                    ax.set_xticks(range(k + 1))
-                    ax.set_xticklabels(tick_lbls, fontsize=4,
-                                       rotation=90, ha="right")
-                else:
-                    ax.set_xticks([])
+        cycle_dir = output_dir / f"cycle_{cd['cycle_number']}"
+        cycle_dir.mkdir(parents=True, exist_ok=True)
 
         lbl_str = "tox" if cd["label"] else "neg"
-        fig.suptitle(
-            f"Attention Matrices — Patient {subject_id}  "
-            f"Cycle {cd['cycle_number']}  P={cd['prob']:.2f}  ({lbl_str})  "
-            f"[top {k} tokens by CLS attn]",
-            fontsize=9,
-        )
-        fig.tight_layout(rect=[0, 0, 1, 0.97])
-        out = output_dir / f"cycle_{cd['cycle_number']}.png"
-        fig.savefig(out, dpi=130, bbox_inches="tight")
-        plt.close(fig)
-        print(f"  Saved {out.name}")
+        for li, layer_attn in enumerate(all_attn):
+            for hi in range(n_heads):
+                head_attn = torch.tensor(layer_attn[hi])   # (n_active, n_active)
+                out = cycle_dir / f"attention_L{li}_H{hi}.png"
+                plot_attention_heatmap(
+                    attn        = head_attn,
+                    token_labels = full_labels,
+                    layer       = li,
+                    head        = hi,
+                    output_path = out,
+                    max_tokens  = max_tokens,
+                )
+        print(f"  Saved {n_layers * n_heads} attention maps → {cycle_dir.name}/"
+              f"  (Cycle {cd['cycle_number']}  P={cd['prob']:.2f}  {lbl_str})")
 
 
 # ── Plot 6: Separate rollout bar chart per cycle ───────────────────────────────
