@@ -46,7 +46,7 @@ import torch
 REPO_ROOT  = Path(__file__).resolve().parent
 MODEL_DIR  = REPO_ROOT / "experiment_outputs" / "run1"
 DATA_DIR   = REPO_ROOT / "tokenization_outputs" / "Jul17_512_all_labs"
-OUTPUT_DIR = REPO_ROOT / "interpretation" / "xai_outputs"
+OUTPUT_DIR = REPO_ROOT / "xai_outputs"
 
 DEVICE            = "auto"    # "auto" | "cpu" | "cuda" | "mps"
 CHECKPOINT_METRIC = "auroc"   # loads best_model_{CHECKPOINT_METRIC}.pt
